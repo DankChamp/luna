@@ -5,7 +5,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     nvidia_nim_api_key: str = ""
-    nvidia_nim_base_url: str = "https://api.nvcf.nvidia.com/v1"
+    nvidia_nim_base_url: str = "https://integrate.api.nvidia.com/v1"
     nvidia_nim_default_model: str = "meta/llama-3.1-8b-instruct"
 
     local_base_url: str = "http://localhost:11434/v1"

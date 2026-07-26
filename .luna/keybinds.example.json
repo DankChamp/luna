@@ -1,0 +1,12 @@
+{
+  "bindings": [
+    {
+      "keys": "escape",
+      "action": "exit"
+    },
+    {
+      "keys": "c-c",
+      "action": "cancel"
+    }
+  ]
+}

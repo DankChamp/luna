@@ -1,0 +1,12 @@
+{
+  "theme": {
+    "primary": "#00ff88",
+    "secondary": "#00ccff",
+    "success": "#00ff41",
+    "error": "#ff3355",
+    "warning": "#ffaa00",
+    "dim": "#555555",
+    "accent": "#aa44ff",
+    "bright": "#eeeeee"
+  }
+}

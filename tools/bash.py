@@ -32,6 +32,10 @@ async def run_command(command: str, timeout: int = 120000) -> str:
         if proc.returncode != 0:
             result += f"\n[exit code: {proc.returncode}]"
 
+        limit = 100 * 1024
+        if len(result) > limit:
+            result = result[:limit] + f"\n... (truncated, {len(result)} total bytes)"
+
         return result if result else "(no output)"
     except Exception as e:
         return f"Error running command: {e}"

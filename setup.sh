@@ -18,7 +18,7 @@ if [ ! -f .env ]; then
     echo "Creating .env from template..."
     cat > .env << 'EOF'
 NVIDIA_NIM_API_KEY=your_key_here
-NVIDIA_NIM_BASE_URL=https://api.nvcf.nvidia.com/v1
+NVIDIA_NIM_BASE_URL=https://integrate.api.nvidia.com/v1
 NVIDIA_NIM_DEFAULT_MODEL=meta/llama-3.1-8b-instruct
 
 LOCAL_BASE_URL=http://localhost:11434/v1

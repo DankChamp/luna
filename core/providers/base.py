@@ -1,3 +1,4 @@
+from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import AsyncIterator
@@ -20,7 +21,19 @@ class ToolCallBatch:
     calls: list[ToolCall]
 
 
-StreamEvent = TextChunk | ToolCallBatch
+@dataclass
+class ToolExecStart:
+    name: str
+    arguments: dict
+
+
+@dataclass
+class ToolExecEnd:
+    name: str
+    result: str
+
+
+StreamEvent = TextChunk | ToolCallBatch | ToolExecStart | ToolExecEnd
 
 
 @dataclass
@@ -37,6 +50,10 @@ class CompletionResult:
 
 
 class AIProvider(ABC):
+    default_model: str
+    base_url: str
+    api_key: str
+
     @abstractmethod
     def complete(
         self,
@@ -53,6 +70,26 @@ class AIProvider(ABC):
     @abstractmethod
     def name(self) -> str:
         ...
+
+    async def list_models(self) -> list[str]:
+        raise NotImplementedError
+
+    async def test_connection(self) -> tuple[bool, str]:
+        try:
+            models = await self.list_models()
+            if models:
+                return True, f"Connected. {len(models)} models available."
+            return True, "Connected."
+        except NotImplementedError:
+            try:
+                available = await self.is_available()
+                if available:
+                    return True, "Available."
+                return False, "Not available."
+            except Exception as e:
+                return False, str(e)
+        except Exception as e:
+            return False, str(e)
 
     def _build_headers(self) -> dict:
         return {
