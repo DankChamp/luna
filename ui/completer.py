@@ -12,7 +12,6 @@ if TYPE_CHECKING:
 SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "Show help"),
     ("/clear", "Clear conversation history"),
-    ("/mode", "Toggle plan/build (add plan/build to set explicitly)"),
     ("/skill", "List skills"),
     ("/skill load ", "Load a skill by name"),
     ("/skill unload ", "Unload a skill by name"),

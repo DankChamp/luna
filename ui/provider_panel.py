@@ -14,7 +14,7 @@ PT_STYLE = PTKStyle([
 ])
 
 
-def _render_panel(active: str, providers: list[dict]) -> Panel:
+def _render_panel(active: str, providers: list[dict], models: list[str] | None = None) -> Panel:
     t = Table.grid(padding=(0, 2))
     t.add_column(style=Neon.dim, justify="right")
     t.add_column()
@@ -22,6 +22,17 @@ def _render_panel(active: str, providers: list[dict]) -> Panel:
     active_row = next((p for p in providers if p["name"] == active), providers[0])
     t.add_row("Active", f"[{Neon.secondary}]{active_row['name']}[/{Neon.secondary}]")
     t.add_row("Model", f"[{Neon.primary}]{active_row['model']}[/{Neon.primary}]")
+
+    if models:
+        lines = []
+        for i, m in enumerate(models):
+            marker = " [←]" if m == active_row["model"] else ""
+            lines.append(f"{m}{marker}")
+        display = ", ".join(lines[:8])
+        if len(models) > 8:
+            display += f" [{Neon.dim}]+{len(models)-8} more[/{Neon.dim}]"
+        t.add_row("Variants", f"[{Neon.dim}]{display}[/{Neon.dim}]")
+
     t.add_row("Key", active_row["key"])
     t.add_row("URL", f"[{Neon.dim}]{active_row['url']}[/{Neon.dim}]")
     t.add_row("")
@@ -69,9 +80,10 @@ async def show_provider_panel(router: AIRouter, console: Console, session: Promp
     while True:
         active = router.active_name
         providers = await router.list_providers()
+        models = await router.cached_models(active)
 
         console.clear()
-        console.print(_render_panel(active, providers))
+        console.print(_render_panel(active, providers, models))
         console.print()
 
         choice = await session.prompt_async(

@@ -90,8 +90,8 @@ def _build_prompt_style() -> PTKStyle:
 def _prompt_text():
     info = MODE_INDICATORS.get(agent.mode, MODE_INDICATORS[AgentMode.BUILD])
     return [
-        ("class:luna_prompt_arrow", info["icon"]),
-        ("class:luna_prompt", " "),
+        ("class:luna_prompt_arrow", f"{info['icon']} {info['label']}"),
+        ("class:luna_prompt", " ▸ "),
     ]
 
 
@@ -199,7 +199,7 @@ async def print_welcome(persona=None):
         persona_name=pname_display,
     )
     console.print(panel)
-    commands = "/help  /clear  /mode  /skill  /subagent  /persona  /provider  /session  /config  /emma  /undo  /theme  /commands  /share  /pr  /issue  /improve  /memory  /exit"
+    commands = "/help  /clear  /skill  /subagent  /persona  /provider  /session  /config  /emma  /undo  /theme  /commands  /share  /pr  /issue  /improve  /memory  /exit"
     console.print(f"[{Neon.dim}]Commands: {commands}[/{Neon.dim}]")
 
 
@@ -207,7 +207,6 @@ def print_help():
     console.print(Panel(
         "\n".join([
             f"[bold {Neon.secondary}]/clear[/bold {Neon.secondary}]       — Clear conversation history",
-            f"[bold {Neon.secondary}]/mode[/bold {Neon.secondary}]        — Toggle plan/build mode",
             f"[bold {Neon.secondary}]/skill[/bold {Neon.secondary}]       — List / load / unload skills",
             f"[bold {Neon.secondary}]/subagent[/bold {Neon.secondary}]    — List / run subagents",
             f"[bold {Neon.secondary}]/persona[/bold {Neon.secondary}]     — Show / reload persona",
@@ -232,20 +231,6 @@ def print_help():
     ))
     console.print(f"[{Neon.dim}]  @explore <query> — invoke a subagent directly[/{Neon.dim}]")
     console.print(f"[{Neon.dim}]  luna \"your prompt\" — one-shot mode[/{Neon.dim}]")
-
-
-async def handle_mode(args: list[str]):
-    if args and args[0] in ("plan", "build"):
-        target = AgentMode.PLAN if args[0] == "plan" else AgentMode.BUILD
-        agent.set_mode(target)
-    else:
-        agent.toggle_mode()
-
-    info = MODE_INDICATORS.get(agent.mode, MODE_INDICATORS[AgentMode.BUILD])
-    all_tools = len(agent.tools._tools)
-    blocked = all_tools - len(agent.tools.definitions)
-    extra = f" [{Neon.dim}]({blocked} tools restricted)[/{Neon.dim}]" if blocked else ""
-    console.print(f"[{info['color']}]●[/{info['color']}] Mode: [{info['color']}]{agent.mode.value.upper()}[/{info['color']}]{extra}")
 
 
 async def handle_skill(args: list[str]):
@@ -932,6 +917,20 @@ async def _async_main():
 
     # Tier 2: Keybinds
     keybinds = load_keybinds()
+
+    @keybinds.add('tab')
+    def _toggle_mode(event):
+        new = AgentMode.PLAN if agent.mode == AgentMode.BUILD else AgentMode.BUILD
+        agent.set_mode(new)
+        event.app.invalidate()
+
+    @keybinds.add('escape', 'm')
+    async def _cycle_model(event):
+        model = await router.cycle_model()
+        if model:
+            console.print(f"[{Neon.dim}]→ model: {model}[/{Neon.dim}]")
+            event.app.renderer.clear()
+            event.app.invalidate()
 
     # Tier 2: LSP
     lsp_mgr = LSPManager(enabled=True)

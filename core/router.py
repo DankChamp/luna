@@ -17,6 +17,8 @@ class AIRouter:
         self.config = config
         self._providers: dict[str, AIProvider] = {}
         self._active: str | None = None
+        self._model_cache: list[str] | None = None
+        self._model_index: int = 0
         self._sync()
 
     def _sync(self):
@@ -63,6 +65,34 @@ class AIRouter:
     async def reconfigure(self, name: str, **kwargs):
         self.config.update_provider(name, **kwargs)
         self._rebuild(name)
+        self._model_cache = None
+
+    async def cached_models(self, name: str | None = None) -> list[str]:
+        target = name or self._active
+        if self._model_cache is None:
+            provider = await self.get_provider(target)
+            if hasattr(provider, "list_models"):
+                try:
+                    self._model_cache = await provider.list_models()
+                except NotImplementedError:
+                    self._model_cache = []
+            else:
+                self._model_cache = []
+        return self._model_cache or []
+
+    async def cycle_model(self) -> str:
+        models = await self.cached_models()
+        if not models:
+            return ""
+        self._model_index = (self._model_index + 1) % len(models)
+        model = models[self._model_index]
+        await self.reconfigure(self._active, model=model)
+        return model
+
+    @property
+    def active_model(self) -> str:
+        p = self.config.get_provider(self._active or "")
+        return p.model if p else ""
 
     async def list_providers(self) -> list[dict]:
         return self.config.list_providers_info()
