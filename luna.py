@@ -5,17 +5,20 @@ import argparse
 import sys
 import os
 import re
+import io
 
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.text import Text
-from rich.live import Live
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import Application
+from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.history import FileHistory
-from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.layout import Layout, HSplit, VSplit, Window
+from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.styles import Style as PTKStyle
 from prompt_toolkit.completion import ThreadedCompleter
+from prompt_toolkit.widgets import TextArea
 
 from ui.completer import LunaCompleter
 
@@ -31,7 +34,7 @@ from core.subagents import SubagentManager
 from core.mcp import MCPManager, MCPServerConfig
 from core.persona import PersonaLoader
 from core.project_config import discover as discover_project_cfg, discover_config_path
-from core.commands import CommandLoader, CustomCommand
+from core.commands import CommandLoader
 from core.references import ReferenceManager
 from core.themes import ThemeManager
 from tools.formatter import FormatterManager
@@ -69,6 +72,30 @@ HISTORY_FILE = os.path.expanduser("~/.luna/history.txt")
 HISTORY_DIR = os.path.dirname(HISTORY_FILE)
 
 AT_MENTION_RE = re.compile(r"@(\w[\w-]*)\s+(.*)")
+_ansi_re = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
+_output_buffer: list[tuple[str, str]] = []
+_app_ref: Application | None = None
+
+
+class _PTKFile(io.IOBase):
+    def __init__(self, buffer_ref, app_ref):
+        self.buffer_ref = buffer_ref
+        self.app_ref = app_ref
+
+    def write(self, data: str) -> int:
+        clean = _ansi_re.sub('', data)
+        buf = self.buffer_ref()
+        if buf is not None:
+            buf.append(("", clean))
+        return len(data)
+
+    def flush(self):
+        app = self.app_ref()
+        if app:
+            app.invalidate()
+
+    def isatty(self):
+        return False
 
 
 def _build_prompt_style() -> PTKStyle:
@@ -185,7 +212,7 @@ async def try_load_emma_persona():
         pass
 
 
-async def print_welcome(persona=None):
+def print_welcome(persona=None):
     os.makedirs(HISTORY_DIR, exist_ok=True)
     _env_warning()
     pname = router.active_name
@@ -610,6 +637,57 @@ async def handle_undo(args: list[str]):
         console.print(f"[{Neon.dim}]Nothing to undo[/{Neon.dim}]")
 
 
+async def handle_todo(args: list[str]):
+    store = getattr(agent, "todos", None)
+    if not store:
+        console.print(f"[{Neon.warning}]⚠ Todo store not available[/{Neon.warning}]")
+        return
+    if not args:
+        todos = store.list()
+        if not todos:
+            console.print(f"[{Neon.dim}]No todos[/{Neon.dim}]")
+            return
+        lines = []
+        for t in todos:
+            icon = f"[{Neon.success}]✓[/{Neon.success}]" if t["status"] == "done" else f"[{Neon.dim}]○[/{Neon.dim}]"
+            lines.append(f"  {icon} {t['content']} [{Neon.dim}]#{t['id']}[/{Neon.dim}]")
+        console.print(Panel(
+            "\n".join(lines),
+            border_style=Neon.primary,
+            title=f"[{Neon.primary}]Todos[/{Neon.primary}]",
+            title_align="left",
+            padding=(0, 1),
+        ))
+        return
+    if args[0] == "add":
+        if len(args) < 2:
+            console.print(f"[{Neon.error}]Usage: /todo add <content>[/{Neon.error}]")
+            return
+        item = store.add(" ".join(args[1:]))
+        console.print(f"[{Neon.success}]✓ Added todo #{item['id']}[/{Neon.success}]")
+    elif args[0] == "done":
+        if len(args) < 2:
+            console.print(f"[{Neon.error}]Usage: /todo done <id>[/{Neon.error}]")
+            return
+        if store.done(args[1]):
+            console.print(f"[{Neon.success}]✓ Todo #{args[1]} done[/{Neon.success}]")
+        else:
+            console.print(f"[{Neon.error}]✗ Todo #{args[1]} not found[/{Neon.error}]")
+    elif args[0] == "rm":
+        if len(args) < 2:
+            console.print(f"[{Neon.error}]Usage: /todo rm <id>[/{Neon.error}]")
+            return
+        if store.remove(args[1]):
+            console.print(f"[{Neon.success}]✓ Removed todo #{args[1]}[/{Neon.success}]")
+        else:
+            console.print(f"[{Neon.error}]✗ Todo #{args[1]} not found[/{Neon.error}]")
+    elif args[0] == "clear":
+        store.clear()
+        console.print(f"[{Neon.success}]✓ Todos cleared[/{Neon.success}]")
+    else:
+        console.print(f"[{Neon.error}]Unknown subcommand: {args[0]}. Usage: /todo [add|done|rm|clear][/{Neon.error}]")
+
+
 def auto_suggest_skill():
     if not agent.skills or not agent.messages:
         return
@@ -682,8 +760,6 @@ async def handle_slash(command: str, command_loader=None, theme_mgr=None) -> boo
     elif cmd == "/clear":
         agent.reset()
         console.print(f"[{Neon.success}]✓[/{Neon.success}] History cleared")
-    elif cmd == "/mode":
-        await handle_mode(cmd_args)
     elif cmd == "/skill":
         await handle_skill(cmd_args)
     elif cmd == "/subagent":
@@ -694,9 +770,11 @@ async def handle_slash(command: str, command_loader=None, theme_mgr=None) -> boo
         await handle_config(cmd_args)
     elif cmd == "/undo":
         await handle_undo(cmd_args)
+    elif cmd == "/todo":
+        await handle_todo(cmd_args)
     elif cmd == "/provider":
         await show_provider_panel(router, console, PromptSession(history=FileHistory(HISTORY_FILE)))
-    elif cmd == "/session":
+    elif cmd in ("/session", "/sessions"):
         await handle_session(cmd_args)
     elif cmd == "/emma":
         await handle_emma(cmd_args)
@@ -731,49 +809,42 @@ async def handle_slash(command: str, command_loader=None, theme_mgr=None) -> boo
 async def process_message(line: str) -> str | None:
     session_mgr.save(agent.messages)
 
-    text_render = Text("")
+    buf = _output_buffer
+    app = _app_ref
     mode_info = MODE_INDICATORS.get(agent.mode, MODE_INDICATORS[AgentMode.BUILD])
-    panel_border = mode_info["color"]
-    panel = Panel(
-        text_render,
-        border_style=panel_border,
-        title=f"[{panel_border}]Luna — {mode_info['label']}[/{panel_border}]",
-        title_align="left",
-        padding=(0, 1),
-    )
+    mc = mode_info["color"]
+
+    buf.append((f"bold {mc}", f"◆ {line}\n"))
+    if app:
+        app.invalidate()
+
     full_text = ""
+    async for event in agent.run(line):
+        if isinstance(event, TextChunk):
+            full_text += event.text
+            buf.append(("", event.text))
+            if app:
+                app.invalidate()
 
-    with Live(panel, refresh_per_second=20, transient=True, vertical_overflow="visible") as live:
-        async for event in agent.run(line):
-            if isinstance(event, TextChunk):
-                full_text += event.text
-                text_render.append(event.text, style="bright_white")
-                live.update(panel)
+        elif isinstance(event, ToolExecStart):
+            args_str = fmt_tool_args(event.arguments)
+            buf.append((f"fg:{Neon.warning}", f"\n  ⚡ "))
+            buf.append((f"fg:{Neon.secondary}", event.name))
+            buf.append((f"fg:{Neon.dim}", f"({args_str})"))
+            if app:
+                app.invalidate()
 
-            elif isinstance(event, ToolExecStart):
-                args_str = fmt_tool_args(event.arguments)
-                text_render.append(f"\n  [{Neon.warning}]⚡[/{Neon.warning}] ", no_wrap=True)
-                text_render.append(f"[{Neon.secondary}]{event.name}[/{Neon.secondary}]", no_wrap=True)
-                text_render.append(f"({args_str})", style=Neon.dim, no_wrap=True)
-                live.update(panel)
+        elif isinstance(event, ToolExecEnd):
+            preview = truncate_result(event.result)
+            buf.append((f"fg:{Neon.dim}", f"\n  → {preview}"))
+            if app:
+                app.invalidate()
 
-            elif isinstance(event, ToolExecEnd):
-                preview = truncate_result(event.result)
-                text_render.append(f"  [{Neon.dim}]→ {preview}[/{Neon.dim}]", no_wrap=True)
-                text_render.append("\n", no_wrap=True)
-                live.update(panel)
-
-            elif isinstance(event, str):
-                full_text = event
+        elif isinstance(event, str):
+            full_text = event
 
     if full_text:
-        console.print(Panel(
-            Markdown(full_text, code_theme="monokai"),
-            border_style=panel_border,
-            title=f"[{panel_border}]Luna[/{panel_border}]",
-            title_align="left",
-            padding=(0, 1),
-        ))
+        buf.append(("", "\n"))
 
     auto_suggest_skill()
     mem = getattr(agent, "memory", None)
@@ -784,72 +855,132 @@ async def process_message(line: str) -> str | None:
 
 
 async def repl(persona=None, command_loader=None, theme_mgr=None, ref_mgr=None, keybinds=None):
+    from session.context import count_messages_tokens, get_context_limit
+    from ui.sidebar import build_sidebar_text
+
+    global _output_buffer, _app_ref
+
     await try_load_emma_persona()
-    await print_welcome(persona)
+    if persona:
+        print_welcome(persona)
+    else:
+        console.print("[cyan]Luna[/cyan] — your coder")
 
     if agent.mcp and agent.project_config and agent.project_config.mcp_servers:
         asyncio.create_task(_start_mcp_servers(agent.mcp))
 
     cmd_list = command_loader.list_commands() if command_loader else []
-    completer = ThreadedCompleter(LunaCompleter(subagent_manager=agent.subagents, commands=cmd_list, theme_mgr=theme_mgr, ref_mgr=ref_mgr))
-    prompt_session = PromptSession(
-        history=FileHistory(HISTORY_FILE),
-        auto_suggest=AutoSuggestFromHistory(),
-        completer=completer,
-        complete_while_typing=True,
-        vi_mode=True,
-        key_bindings=keybinds,
+    todo_store = getattr(agent, "todos", None)
+
+    output_buf: list[tuple[str, str]] = []
+    _output_buffer = output_buf
+
+    def _sidebar_text():
+        project = os.path.basename(os.getcwd())
+        sid = session_mgr.current
+        tokens = count_messages_tokens(agent.messages)
+        limit = get_context_limit(router.active_model)
+        todos = todo_store.list() if todo_store else []
+        return build_sidebar_text(project, sid, tokens, limit, todos)
+
+    sidebar_win = Window(
+        content=FormattedTextControl(_sidebar_text),
+        width=32,
+        style="bg:#1a1a2e",
+        wrap_lines=False,
     )
 
-    while True:
+    out_ctrl = FormattedTextControl(lambda: _output_buffer)
+    out_win = Window(content=out_ctrl, wrap_lines=True)
+
+    completer = ThreadedCompleter(LunaCompleter(
+        subagent_manager=agent.subagents, commands=cmd_list,
+        theme_mgr=theme_mgr, ref_mgr=ref_mgr,
+    ))
+
+    input_field = TextArea(
+        height=2,
+        prompt=_prompt_text,
+        style=_build_prompt_style,
+        completer=completer,
+        complete_while_typing=True,
+        multiline=False,
+    )
+
+    async def _accept(buf: Buffer) -> bool:
+        text = buf.text.strip()
+        if not text:
+            return True
+        buf.text = ""
         try:
-            user_input = await prompt_session.prompt_async(
-                _prompt_text(),
-                style=_build_prompt_style(),
-            )
-        except (EOFError, KeyboardInterrupt):
-            break
+            at_match = AT_MENTION_RE.match(text)
+            if at_match:
+                aname = at_match.group(1)
+                sub_prompt = at_match.group(2)
+                if agent.subagents and agent.subagents.get(aname):
+                    agent_def = agent.subagents.get(aname)
+                    output_buf.append((f"fg:{Neon.dim}", f"→ @{aname}...\n"))
+                    if _app_ref:
+                        _app_ref.invalidate()
+                    try:
+                        mo = agent.project_config.agent_models if agent.project_config else None
+                        result = await agent.subagents.run(aname, sub_prompt, model_overrides=mo)
+                        if result:
+                            output_buf.append(("", f"\n{result}\n"))
+                    except Exception as e:
+                        output_buf.append((f"fg:{Neon.error}", f"\n✗ @{aname} error: {e}\n"))
+                    if _app_ref:
+                        _app_ref.invalidate()
+                    session_mgr.save(agent.messages)
+                    return True
 
-        line = user_input.strip()
-        if not line:
-            continue
+            if text.startswith("/"):
+                handled = await handle_slash(text, command_loader=command_loader, theme_mgr=theme_mgr)
+                if not handled:
+                    output_buf.append((f"fg:{Neon.error}", f"Unknown command: {text}\n"))
+                    if _app_ref:
+                        _app_ref.invalidate()
+                session_mgr.save(agent.messages)
+                return True
 
-        # Check for @mention subagent invocation
-        at_match = AT_MENTION_RE.match(line)
-        if at_match:
-            agent_name = at_match.group(1)
-            sub_prompt = at_match.group(2)
-            if agent.subagents and agent.subagents.get(agent_name):
-                agent_def = agent.subagents.get(agent_name)
-                console.print(f"[{Neon.dim}]→ @{agent_name}...[/{Neon.dim}]")
-                try:
-                    model_overrides = agent.project_config.agent_models if agent.project_config else None
-                    result = await agent.subagents.run(agent_name, sub_prompt, model_overrides=model_overrides)
-                    if result:
-                        console.print(Panel(
-                            Markdown(result, code_theme="monokai"),
-                            border_style=agent_def.color,
-                            title=f"[{agent_def.color}]@{agent_name}[/{agent_def.color}]",
-                            title_align="left",
-                            padding=(0, 1),
-                        ))
-                except Exception as e:
-                    console.print(f"\n[{Neon.error}]✗ @{agent_name} error: {e}[/{Neon.error}]")
-                continue
-
-        if line.startswith("/"):
-            try:
-                await handle_slash(line, command_loader=command_loader, theme_mgr=theme_mgr)
-            except Exception as e:
-                console.print(f"[{Neon.error}]✗ Error: {e}[/{Neon.error}]")
-            continue
-
-        try:
-            await process_message(line)
+            await process_message(text)
         except Exception as e:
-            console.print(f"\n[{Neon.error}]✗ Error: {e}[/{Neon.error}]")
+            output_buf.append((f"fg:{Neon.error}", f"✗ Error: {e}\n"))
+            if _app_ref:
+                _app_ref.invalidate()
+            session_mgr.save(agent.messages)
+            return True
 
         session_mgr.save(agent.messages)
+        return True
+
+    input_field.accept_handler = _accept
+
+    layout = Layout(HSplit([
+        VSplit([sidebar_win, out_win]),
+        input_field,
+    ]))
+
+    _ptk_file = _PTKFile(lambda: _output_buffer, lambda: _app_ref)
+    _orig_file = console.file
+    console.file = _ptk_file
+
+    app = Application(
+        layout=layout,
+        key_bindings=keybinds,
+        full_screen=True,
+        mouse_support=True,
+        style=PTKStyle([("text-area", "bg:#0d0d1a fg:#e0e0e0")]),
+    )
+
+    _app_ref = app
+
+    try:
+        await app.run_async()
+    finally:
+        _app_ref = None
+        _output_buffer = []
+        console.file = _orig_file
 
 
 async def one_shot(prompt: str):
@@ -952,6 +1083,14 @@ async def _async_main():
     agent.tools.register(issue_tool)
     agent.tools.register(list_prs_tool)
     agent.tools.register(list_issues_tool)
+
+    # Leapfrog: Todo store
+    from core.todos import TodoStore
+    from tools.todo_tool import create_todo_tools
+    todo_store = TodoStore()
+    agent.todos = todo_store
+    for tt in create_todo_tools(todo_store):
+        agent.tools.register(tt)
 
     # Leapfrog: File watcher
     async def _on_file_change(changes: list[str]):

@@ -38,6 +38,12 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/improve", "Run self-improvement analysis"),
     ("/memory", "View stored memories"),
     ("/memory clear", "Clear all memories"),
+    ("/todo", "List todos"),
+    ("/todo add ", "Add a todo"),
+    ("/todo done ", "Mark a todo done"),
+    ("/todo rm ", "Remove a todo"),
+    ("/todo clear", "Clear all todos"),
+    ("/sessions", "Alias for /session"),
     ("/exit", "Exit Luna"),
 ]
 
