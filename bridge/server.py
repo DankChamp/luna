@@ -173,14 +173,18 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/chat":
             qs = parse_qs(parsed.query)
             message = qs.get("message", [None])[0]
+            system = None
             if not message:
                 cl = int(self.headers.get("Content-Length", 0))
                 if cl:
                     body = self.rfile.read(cl)
                     data = json.loads(body)
                     message = data.get("message")
+                    system = data.get("system")
             if not message:
                 return self._send_json(400, {"error": "missing message"})
+            if system and _Handler.agent:
+                _Handler.agent._system_prompt = system
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
@@ -190,6 +194,11 @@ class _Handler(BaseHTTPRequestHandler):
             if result:
                 return self._send_json(200, {"response": result})
             return self._send_json(500, {"error": "no output"})
+
+        if path == "/history":
+            msgs = _Handler.agent.messages
+            recent = [{"role": m.get("role"), "content": m.get("content", "")[:300]} for m in msgs[-20:]] if msgs else []
+            return self._send_json(200, {"messages": recent, "count": len(msgs)})
 
         if path == "/ws":
             self._handle_ws()
@@ -206,8 +215,11 @@ class _Handler(BaseHTTPRequestHandler):
             body = self.rfile.read(cl)
             data = json.loads(body)
             message = data.get("message", "")
+            system = data.get("system", "")
             if not message:
                 return self._send_json(400, {"error": "missing message"})
+            if system and _Handler.agent:
+                _Handler.agent._system_prompt = system
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
@@ -217,6 +229,22 @@ class _Handler(BaseHTTPRequestHandler):
             if result:
                 return self._send_json(200, {"response": result})
             return self._send_json(500, {"error": "no output"})
+
+        if parsed.path == "/api/ingest":
+            cl = int(self.headers.get("Content-Length", 0))
+            if not cl:
+                return self._send_json(400, {"error": "missing body"})
+            body = self.rfile.read(cl)
+            data = json.loads(body)
+            fact = data.get("fact", "")
+            tags = data.get("tags", [])
+            if not fact:
+                return self._send_json(400, {"error": "missing fact"})
+            mem = getattr(_Handler.agent, "memory", None)
+            if mem:
+                mem.add_fact(fact, source="emma")
+            return self._send_json(200, {"ok": True, "fact": fact})
+
         self._send_json(404, {"error": "not found"})
 
     def _read_ws_frame(self) -> tuple[int, bytes] | None:

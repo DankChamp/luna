@@ -494,7 +494,7 @@ async def handle_emma(args: list[str]):
             console.print(f"[{Neon.dim}]Nothing to sync (no messages)[/{Neon.dim}]")
             return
         summary = agent.messages[-1].get("content", "")[:500]
-        ok = await emma.save_to_memory("project", summary, tags=["luna"])
+        ok = await emma.save_to_memory("project", summary, tags=["luna-coding"])
         if ok:
             console.print(f"[{Neon.success}]✓ Synced to Emma memory[/{Neon.success}]")
         else:

@@ -20,10 +20,10 @@ class EmmaBridge:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-                resp = await client.get(f"{self.api_url}/memory?tier=persona", headers=headers)
+                resp = await client.get(f"{self.api_url}/memory/persona", headers=headers)
                 if resp.status_code == 200:
                     data = resp.json()
-                    return data.get("content")
+                    return data.get("text")
         except Exception:
             pass
         return None
@@ -32,10 +32,20 @@ class EmmaBridge:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-                body = {"tier": tier, "content": content}
-                if tags:
-                    body["tags"] = tags
-                resp = await client.post(f"{self.api_url}/memory", json=body, headers=headers)
+                body: dict = {}
+                if tier == "project":
+                    project = tags[0] if tags else "luna"
+                    body = {"project": project, "text": content}
+                    resp = await client.post(f"{self.api_url}/memory/project-text", json=body, headers=headers)
+                elif tier == "daily":
+                    body = {"text": content}
+                    resp = await client.post(f"{self.api_url}/memory/daily-text", json=body, headers=headers)
+                elif tier == "long_term":
+                    body = {"text": content}
+                    resp = await client.post(f"{self.api_url}/memory/long-term-text", json=body, headers=headers)
+                else:
+                    body = {"project": "luna", "text": content}
+                    resp = await client.post(f"{self.api_url}/memory/project-text", json=body, headers=headers)
                 return resp.status_code == 200
         except Exception:
             return False
@@ -51,7 +61,7 @@ class EmmaBridge:
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    return data.get("response")
+                    return data.get("reply")
         except Exception:
             pass
         return None
