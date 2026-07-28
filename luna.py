@@ -453,6 +453,8 @@ async def handle_config(args: list[str]):
 
 
 async def handle_session(args: list[str]):
+    mem = getattr(agent, "memory", None)
+
     if not args:
         sessions = session_mgr.list_sessions()
         if not sessions:
@@ -463,29 +465,78 @@ async def handle_session(args: list[str]):
             marker = f" [{Neon.primary}]←[/{Neon.primary}]" if s["id"] == session_mgr.current else ""
             preview = (s.get("preview", "") or "")[:50]
             preview_text = f" [{Neon.dim}]— {preview}[/{Neon.dim}]" if preview else ""
-            console.print(f"  [{Neon.secondary}]•[/{Neon.secondary}] {s['id'][:19]} [{Neon.dim}]({s['message_count']} msgs)[/{Neon.dim}]{marker}{preview_text}")
+            p = s.get("project", {})
+            pinfo = ""
+            if p.get("name"):
+                pinfo = f" [{Neon.secondary}]{p['name']}[/{Neon.secondary}]"
+                if p.get("branch"):
+                    pinfo += f" [{Neon.dim}]({p['branch']})[/{Neon.dim}]"
+            console.print(f"  [{Neon.secondary}]•[/{Neon.secondary}] {s['id'][:19]} [{Neon.dim}]({s['message_count']} msgs)[/{Neon.dim}]{pinfo}{marker}{preview_text}")
         console.print(f"[{Neon.dim}]Usage: /session <id> | /session new | /session delete <id>[/{Neon.dim}]")
         return
 
     if args[0] == "new":
+        if mem and session_mgr.current:
+            mem.save_to_file(session_mgr.current)
         session_mgr.new()
         agent.reset()
+        if mem:
+            mem.clear()
+        session_mgr.save(agent.messages)
         console.print(f"[{Neon.success}]✓[/{Neon.success}] New session started")
         return
 
     if args[0] == "delete" and len(args) >= 2:
+        from pathlib import Path
+        mpath = Path.home() / ".luna" / "memory" / f"{args[1]}.json"
+        if mpath.exists():
+            mpath.unlink()
         if session_mgr.delete(args[1]):
             console.print(f"[{Neon.success}]✓ Deleted session {args[1][:19]}[/{Neon.success}]")
         else:
             console.print(f"[{Neon.error}]✗ Session not found: {args[1]}[/{Neon.error}]")
         return
 
-    msgs = session_mgr.load(args[0])
-    if msgs is None:
+    # Switch to session
+    if mem and session_mgr.current:
+        mem.save_to_file(session_mgr.current)
+
+    data = session_mgr.load(args[0])
+    if data is None:
         console.print(f"[{Neon.error}]✗ Session not found: {args[0]}[/{Neon.error}]")
         return
+
+    msgs = data.get("messages", [])
+    project = data.get("project", {})
+
+    if mem:
+        mem.load_from_file(args[0])
+
+    project_path = project.get("path", "")
+    if project_path:
+        try:
+            os.chdir(project_path)
+            cfg = discover_project_cfg()
+            if cfg:
+                agent.set_project_config(cfg)
+            console.print(f"[{Neon.dim}]→ cd {project_path}[/{Neon.dim}]")
+        except FileNotFoundError:
+            console.print(f"[{Neon.warning}]⚠ Project directory not found: {project_path}[/{Neon.warning}]")
+        except Exception as e:
+            console.print(f"[{Neon.warning}]⚠ Could not switch to project: {e}[/{Neon.warning}]")
+
     agent.load_messages(msgs)
-    console.print(f"[{Neon.success}]✓ Loaded [{Neon.secondary}]{args[0][:19]}[/{Neon.secondary}] ({len(msgs)} messages)")
+
+    lines = [f"[{Neon.success}]✓ Loaded session [{Neon.secondary}]{args[0][:19]}[/{Neon.secondary}] ({len(msgs)} messages)"]
+    if project.get("name"):
+        lines.append(f"[{Neon.secondary}]  Project:[/{Neon.secondary}] {project['name']}")
+    if project.get("branch"):
+        lines.append(f"[{Neon.secondary}]  Branch:[/{Neon.secondary}] {project['branch']}")
+    if project.get("repo"):
+        lines.append(f"[{Neon.secondary}]  Repo:[/{Neon.secondary}] {project['repo']}")
+    if project.get("summary"):
+        lines.append(f"[{Neon.dim}]  {project['summary']}[/{Neon.dim}]")
+    console.print("\n".join(lines))
 
 
 async def handle_emma(args: list[str]):
@@ -881,7 +932,12 @@ async def repl(persona=None, command_loader=None, theme_mgr=None, ref_mgr=None, 
         tokens = count_messages_tokens(agent.messages)
         limit = get_context_limit(router.active_model)
         todos = todo_store.list() if todo_store else []
-        return build_sidebar_text(project, sid, tokens, limit, todos)
+        branch = ""
+        if sid:
+            sess = session_mgr.load(sid)
+            if sess:
+                branch = sess.get("project", {}).get("branch", "") or ""
+        return build_sidebar_text(project, sid, tokens, limit, todos, branch)
 
     sidebar_win = Window(
         content=FormattedTextControl(_sidebar_text),
@@ -930,7 +986,7 @@ async def repl(persona=None, command_loader=None, theme_mgr=None, ref_mgr=None, 
                         output_buf.append((f"fg:{Neon.error}", f"\n✗ @{aname} error: {e}\n"))
                     if _app_ref:
                         _app_ref.invalidate()
-                    session_mgr.save(agent.messages)
+                    _save_all()
                     return True
 
             if text.startswith("/"):
@@ -939,7 +995,7 @@ async def repl(persona=None, command_loader=None, theme_mgr=None, ref_mgr=None, 
                     output_buf.append((f"fg:{Neon.error}", f"Unknown command: {text}\n"))
                     if _app_ref:
                         _app_ref.invalidate()
-                session_mgr.save(agent.messages)
+                _save_all()
                 return True
 
             await process_message(text)
@@ -947,10 +1003,10 @@ async def repl(persona=None, command_loader=None, theme_mgr=None, ref_mgr=None, 
             output_buf.append((f"fg:{Neon.error}", f"✗ Error: {e}\n"))
             if _app_ref:
                 _app_ref.invalidate()
-            session_mgr.save(agent.messages)
+            _save_all()
             return True
 
-        session_mgr.save(agent.messages)
+        _save_all()
         return True
 
     input_field.accept_handler = _accept
@@ -959,6 +1015,12 @@ async def repl(persona=None, command_loader=None, theme_mgr=None, ref_mgr=None, 
         VSplit([sidebar_win, out_win]),
         input_field,
     ]))
+
+    def _save_all():
+        session_mgr.save(agent.messages)
+        mem = getattr(agent, "memory", None)
+        if mem and session_mgr.current:
+            mem.save_to_file(session_mgr.current)
 
     _ptk_file = _PTKFile(lambda: _output_buffer, lambda: _app_ref)
     _orig_file = console.file
@@ -977,6 +1039,7 @@ async def repl(persona=None, command_loader=None, theme_mgr=None, ref_mgr=None, 
     try:
         await app.run_async()
     finally:
+        _save_all()
         _app_ref = None
         _output_buffer = []
         console.file = _orig_file
@@ -1074,6 +1137,14 @@ async def _async_main():
     # Tier 3: Memory
     memory = MemoryStore()
     agent.memory = memory
+
+    # Load most recent session's memory on startup
+    recent = session_mgr.list_sessions()
+    if recent:
+        latest = recent[0]["id"]
+        session_mgr._current = latest
+        memory.load_from_file(latest)
+
     for mt in create_memory_tools(memory):
         agent.tools.register(mt)
 

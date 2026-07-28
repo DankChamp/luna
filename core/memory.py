@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Optional
 
 
+MEMORY_DIR = Path.home() / ".luna" / "memory"
+
 FACT_PATTERNS = [
     re.compile(r"(?:my|the user's?|the)\s+(\w+(?:\s+\w+){0,3})\s+is\s+(.+?)[.!\n]", re.IGNORECASE),
     re.compile(r"(?:i|we)\s+(?:use|prefer|like)\s+(.+?)[.!\n]", re.IGNORECASE),
@@ -79,6 +81,32 @@ class MemoryStore:
             for k, v in self._data["project_state"].items():
                 parts.append(f"- {k}: {v}")
         return "\n".join(parts)
+
+    def to_dict(self) -> dict:
+        return dict(self._data)
+
+    def from_dict(self, data: dict):
+        self._data = {
+            "facts": data.get("facts", []),
+            "preferences": data.get("preferences", {}),
+            "project_state": data.get("project_state", {}),
+        }
+
+    def save_to_file(self, session_id: str):
+        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        (MEMORY_DIR / f"{session_id}.json").write_text(
+            json.dumps(self._data, indent=2)
+        )
+
+    def load_from_file(self, session_id: str):
+        path = MEMORY_DIR / f"{session_id}.json"
+        if path.exists():
+            try:
+                self._data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                self._data = {"facts": [], "preferences": {}, "project_state": {}}
+        else:
+            self._data = {"facts": [], "preferences": {}, "project_state": {}}
 
     def clear(self):
         self._data = {"facts": [], "preferences": {}, "project_state": {}}

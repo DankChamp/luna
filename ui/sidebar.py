@@ -9,6 +9,7 @@ def build_sidebar_text(
     token_count: int,
     token_limit: int,
     todos: list[dict],
+    branch: str = "",
 ) -> list[tuple[str, str]]:
     result: list[tuple[str, str]] = []
 
@@ -26,6 +27,8 @@ def build_sidebar_text(
     section("Project")
     disp_project = project[:26] + "…" if len(project) > 27 else project
     line("", disp_project, "bold " + Neon.bright)
+    if branch:
+        line("", f"({branch})", Neon.secondary)
 
     section("Session")
     sid = session_id[:11] + "…" if session_id and len(session_id) > 12 else (session_id or "—")

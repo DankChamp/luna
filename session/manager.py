@@ -1,5 +1,7 @@
 from __future__ import annotations
 import json
+import os
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,12 +22,61 @@ class SessionManager:
     def current(self) -> str | None:
         return self._current
 
+    @staticmethod
+    def _capture_metadata() -> dict:
+        meta = {
+            "path": os.getcwd(),
+            "name": Path.cwd().name,
+            "repo": "",
+            "branch": "",
+            "commit": "",
+            "files": [],
+            "summary": "",
+        }
+        try:
+            r = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                capture_output=True, text=True, timeout=5
+            )
+            if r.returncode == 0:
+                meta["repo"] = r.stdout.strip()
+        except Exception:
+            pass
+        try:
+            r = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, timeout=5
+            )
+            if r.returncode == 0:
+                meta["branch"] = r.stdout.strip()
+        except Exception:
+            pass
+        try:
+            r = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=5
+            )
+            if r.returncode == 0:
+                meta["commit"] = r.stdout.strip()[:12]
+        except Exception:
+            pass
+        return meta
+
+    @staticmethod
+    def _auto_summarize(messages: list[dict]) -> str:
+        for m in reversed(messages):
+            if m["role"] == "assistant":
+                content = m.get("content", "") or ""
+                return content[:120].strip()
+        return ""
+
     def list_sessions(self) -> list[dict]:
         sessions = []
         for f in sorted(self.session_dir.glob("*.json"), reverse=True):
             try:
                 data = json.loads(f.read_text())
                 msgs = data.get("messages", [])
+                project = data.get("project", {})
                 last_content = ""
                 for m in reversed(msgs):
                     if m["role"] == "user":
@@ -37,6 +88,7 @@ class SessionManager:
                     "updated": data.get("updated", ""),
                     "message_count": len(msgs),
                     "preview": last_content,
+                    "project": project,
                 })
             except Exception:
                 continue
@@ -49,10 +101,12 @@ class SessionManager:
         path = self.session_dir / f"{self._current}.json"
 
         created = now
+        existing_project = None
         if path.exists():
             try:
                 existing = json.loads(path.read_text())
                 created = existing.get("created", now)
+                existing_project = existing.get("project")
             except Exception:
                 pass
 
@@ -60,23 +114,34 @@ class SessionManager:
         if total_tokens > COMPACT_THRESHOLD:
             messages = self._compact(messages, TARGET_AFTER_COMPACT)
 
+        project = self._capture_metadata()
+        if existing_project:
+            project["path"] = existing_project.get("path", project["path"])
+            project["name"] = existing_project.get("name", project["name"])
+            project["summary"] = existing_project.get("summary", "")
+
+        summary = self._auto_summarize(messages)
+        if summary:
+            project["summary"] = summary
+
         data = {
             "id": self._current,
             "created": created,
             "updated": now,
+            "project": project,
             "messages": messages,
         }
         path.write_text(json.dumps(data, indent=2))
         return self._current
 
-    def load(self, session_id: str) -> list[dict] | None:
+    def load(self, session_id: str) -> dict | None:
         path = self.session_dir / f"{session_id}.json"
         if not path.exists():
             return None
         try:
             data = json.loads(path.read_text())
             self._current = session_id
-            return data.get("messages", [])
+            return data
         except Exception:
             return None
 
