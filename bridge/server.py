@@ -186,7 +186,7 @@ class _Handler(BaseHTTPRequestHandler):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                result = loop.run_until_complete(self._run_agent(message))
+                result = loop.run_until_complete(self._run_agent(message, system=system or ""))
             finally:
                 loop.close()
             if result:
@@ -219,7 +219,7 @@ class _Handler(BaseHTTPRequestHandler):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                result = loop.run_until_complete(self._run_agent(message))
+                result = loop.run_until_complete(self._run_agent(message, system=system))
             finally:
                 loop.close()
             if result:
@@ -313,8 +313,10 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-    async def _stream_agent(self, message: str):
+    async def _stream_agent(self, message: str, system: str = ""):
         from core.providers.base import TextChunk, ToolExecStart, ToolExecEnd
+        if system:
+            _Handler.agent._emma_context = system
         full = ""
         async for event in _Handler.agent.run(message):
             if isinstance(event, TextChunk):
@@ -325,8 +327,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self._broadcast({"type": "chunk", "text": event})
         self._broadcast({"type": "done", "count": len(_Handler.agent.messages) // 2})
 
-    async def _run_agent(self, message: str) -> str | None:
+    async def _run_agent(self, message: str, system: str = "") -> str | None:
         from core.providers.base import TextChunk, ToolExecStart, ToolExecEnd
+        if system:
+            _Handler.agent._emma_context = system
         full = ""
         async for event in _Handler.agent.run(message):
             if isinstance(event, TextChunk):
