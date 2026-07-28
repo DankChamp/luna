@@ -35,7 +35,7 @@ def load_keybinds(path: str | Path | None = None) -> KeyBindings:
 
         handler = _make_handler(action)
         if handler is None:
-            handler = lambda e: None
+            continue
 
         try:
             kb.add(keys, filter=None)(handler)

@@ -20,13 +20,19 @@ class FileWatcher:
         self._task = asyncio.create_task(self._poll(Path(directory), interval))
 
     async def _poll(self, directory: Path, interval: float):
-        while self._running:
-            changes = self._scan(directory)
-            if changes and self._callback:
-                r = self._callback(changes)
-                if r is not None:
-                    await r
-            await asyncio.sleep(interval)
+        try:
+            while self._running:
+                changes = self._scan(directory)
+                if changes and self._callback:
+                    r = self._callback(changes)
+                    if r is not None:
+                        await r
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            import sys
+            print(f"[file_watcher] error: {e}", file=sys.stderr)
 
     def _scan(self, directory: Path) -> list[str]:
         changes = []

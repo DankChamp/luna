@@ -154,7 +154,9 @@ class SubagentManager:
         model = agent_def.model
         if model is None and model_overrides:
             model = model_overrides.get(name)
-        provider = await self._router.get_provider(model)
+        provider = await self._router.get_provider()
+        if model:
+            provider.model = model
 
         messages: list[dict] = [
             {"role": "system", "content": agent_def.prompt},

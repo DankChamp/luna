@@ -19,6 +19,8 @@ def _render_panel(active: str, providers: list[dict], models: list[str] | None =
     t.add_column(style=Neon.dim, justify="right")
     t.add_column()
 
+    if not providers:
+        return Panel("No providers configured", border_style=Neon.primary)
     active_row = next((p for p in providers if p["name"] == active), providers[0])
     t.add_row("Active", f"[{Neon.secondary}]{active_row['name']}[/{Neon.secondary}]")
     t.add_row("Model", f"[{Neon.primary}]{active_row['model']}[/{Neon.primary}]")

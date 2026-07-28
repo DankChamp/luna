@@ -208,8 +208,8 @@ async def try_load_emma_persona():
         persona = await emma.get_persona()
         if persona:
             setattr(agent, "_emma_context", persona)
-    except Exception:
-        pass
+    except Exception as e:
+        console.print(f"[{Neon.dim}]Emma persona unavailable: {e}[/{Neon.dim}]")
 
 
 def print_welcome(persona=None):
@@ -917,8 +917,7 @@ async def repl(persona=None, command_loader=None, theme_mgr=None, ref_mgr=None, 
             if at_match:
                 aname = at_match.group(1)
                 sub_prompt = at_match.group(2)
-                if agent.subagents and agent.subagents.get(aname):
-                    agent_def = agent.subagents.get(aname)
+                if agent.subagents and (agent_def := agent.subagents.get(aname)):
                     output_buf.append((f"fg:{Neon.dim}", f"→ @{aname}...\n"))
                     if _app_ref:
                         _app_ref.invalidate()

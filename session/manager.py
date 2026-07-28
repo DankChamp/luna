@@ -117,8 +117,6 @@ class SessionManager:
                 continue
         if current_pair:
             pairs.append(current_pair)
-        if current_pair:
-            pairs.append(current_pair)
 
         if len(pairs) <= keep_pairs:
             compacted.extend(others)

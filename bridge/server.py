@@ -127,7 +127,7 @@ class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 class _Handler(BaseHTTPRequestHandler):
-    agent: Agent = None
+    agent: Agent | None = None
     _ws_clients: list[_Handler] = []
     _ws_lock: threading.Lock = threading.Lock()
 
@@ -183,8 +183,6 @@ class _Handler(BaseHTTPRequestHandler):
                     system = data.get("system")
             if not message:
                 return self._send_json(400, {"error": "missing message"})
-            if system and _Handler.agent:
-                _Handler.agent._system_prompt = system
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
@@ -218,8 +216,6 @@ class _Handler(BaseHTTPRequestHandler):
             system = data.get("system", "")
             if not message:
                 return self._send_json(400, {"error": "missing message"})
-            if system and _Handler.agent:
-                _Handler.agent._system_prompt = system
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:

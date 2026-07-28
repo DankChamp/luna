@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import httpx
 
 from .registry import ToolDef
@@ -16,8 +18,6 @@ async def web_fetch(url: str) -> str:
             text = resp.text
 
             if "text/html" in content_type or "text/plain" in content_type:
-                # Basic HTML -> text conversion (strip tags)
-                import re
                 text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
                 text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL)
                 text = re.sub(r"<[^>]+>", " ", text)

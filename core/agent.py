@@ -226,16 +226,14 @@ class Agent:
         return ""
 
     def _load_references_description(self) -> str:
-        refs = getattr(self, "references", None)
-        if not refs:
+        if not self.references:
             return ""
-        return refs.attach_description()
+        return self.references.attach_description()
 
     def _load_memory_summary(self) -> str:
-        mem = getattr(self, "memory", None)
-        if not mem:
+        if not self.memory:
             return ""
-        summary = mem.summarize()
+        summary = self.memory.summarize()
         return summary if summary else ""
 
     def reset(self):

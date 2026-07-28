@@ -75,7 +75,7 @@ class NvidiaNIMProvider(AIProvider):
                                 import asyncio
                                 await asyncio.sleep(2 ** attempt)
                                 continue
-                            yield TextChunk(text=f"[Error {resp.status_code}] {error_text.decode()}")
+                            yield TextChunk(text=f"[Error {resp.status_code}] {error_text.decode('utf-8', errors='replace')}")
                             return
 
                         tool_calls_accum: dict[int, dict] = {}
