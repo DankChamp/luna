@@ -1100,7 +1100,8 @@ async def _async_main():
     watcher = FileWatcher(callback=_on_file_change)
     agent.watcher = watcher
     if cfg:
-        asyncio.create_task(watcher.start(cfg.root if cfg.root else "."))
+        root_dir = discover_config_path()
+        asyncio.create_task(watcher.start(str(root_dir.parent) if root_dir else "."))
 
     # Leapfrog: Multi-agent orchestrator
     if agent.subagents:
