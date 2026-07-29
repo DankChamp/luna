@@ -12,11 +12,12 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application
+from prompt_toolkit.application.current import get_app
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.layout import Layout, HSplit, VSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
-from prompt_toolkit.styles import Style as PTKStyle
+from prompt_toolkit.styles import Style as PTKStyle, DynamicStyle
 from prompt_toolkit.completion import ThreadedCompleter
 from prompt_toolkit.widgets import TextArea
 
@@ -97,21 +98,6 @@ class _PTKFile(io.IOBase):
     def isatty(self):
         return False
 
-
-def _build_prompt_style() -> PTKStyle:
-    info = MODE_INDICATORS.get(agent.mode, MODE_INDICATORS[AgentMode.BUILD])
-    mc = info["color"]
-    return PTKStyle([
-        ("luna_prompt_arrow", f"bold {info['color']}"),
-        ("luna_prompt", f"bold {Neon.primary}"),
-        ("completion-menu", "bg:#1a1a2e"),
-        ("completion-menu.completion", f"bg:#222244 {Neon.bright}"),
-        ("completion-menu.completion.current", f"bg:{mc} #000000"),
-        ("completion-menu.meta", f"bg:#1a1a2e {Neon.dim}"),
-        ("completion-menu.meta.current", f"bg:{mc} #000000"),
-        ("scrollbar", "bg:#222244"),
-        ("scrollbar.button", f"bg:{mc}"),
-    ])
 
 
 def _prompt_text():
@@ -870,8 +856,12 @@ async def process_message(line: str) -> str | None:
         app.invalidate()
 
     full_text = ""
+    in_response = False
     async for event in agent.run(line):
         if isinstance(event, TextChunk):
+            if not in_response:
+                buf.append((f"bold fg:{Neon.secondary}", "\u2503 "))
+                in_response = True
             full_text += event.text
             buf.append(("", event.text))
             if app:
@@ -879,7 +869,7 @@ async def process_message(line: str) -> str | None:
 
         elif isinstance(event, ToolExecStart):
             args_str = fmt_tool_args(event.arguments)
-            buf.append((f"fg:{Neon.warning}", f"\n  ⚡ "))
+            buf.append((f"fg:{Neon.warning}", f"\n  \u26a1 "))
             buf.append((f"fg:{Neon.secondary}", event.name))
             buf.append((f"fg:{Neon.dim}", f"({args_str})"))
             if app:
@@ -887,7 +877,7 @@ async def process_message(line: str) -> str | None:
 
         elif isinstance(event, ToolExecEnd):
             preview = truncate_result(event.result)
-            buf.append((f"fg:{Neon.dim}", f"\n  → {preview}"))
+            buf.append((f"fg:{Neon.dim}", f"\n  \u2192 {preview}"))
             if app:
                 app.invalidate()
 
@@ -907,47 +897,97 @@ async def process_message(line: str) -> str | None:
 
 async def repl(persona=None, command_loader=None, theme_mgr=None, ref_mgr=None, keybinds=None):
     from session.context import count_messages_tokens, get_context_limit
-    from ui.sidebar import build_sidebar_text
 
     global _output_buffer, _app_ref
 
     await try_load_emma_persona()
-    if persona:
-        print_welcome(persona)
-    else:
-        console.print("[cyan]Luna[/cyan] — your coder")
 
     if agent.mcp and agent.project_config and agent.project_config.mcp_servers:
         asyncio.create_task(_start_mcp_servers(agent.mcp))
 
     cmd_list = command_loader.list_commands() if command_loader else []
-    todo_store = getattr(agent, "todos", None)
 
     output_buf: list[tuple[str, str]] = []
     _output_buffer = output_buf
 
+    output_buf.append((Neon.primary, "  \u2726 Luna — your coder\n"))
+    if cmd_list:
+        names = [c.name for c in cmd_list[:6]]
+        output_buf.append((Neon.dim, f"  Commands: /{'  /'.join(names)}\n"))
+    output_buf.append(("", "\n"))
+
+    sidebar_visible = True
+
+    # ── Header ──
+    def _header_text():
+        project = os.path.basename(os.getcwd())
+        sid = session_mgr.current
+        info = MODE_INDICATORS.get(agent.mode, MODE_INDICATORS[AgentMode.BUILD])
+        mc = info["color"]
+        tokens = count_messages_tokens(agent.messages)
+        limit = get_context_limit(router.active_model)
+        model_name = router.active_name or "?"
+        parts = [
+            ("bold " + Neon.primary, " \u2726 Luna "),
+            (f"bold {mc}", f"{info['icon']} {info['label']} "),
+            (Neon.secondary, f"{model_name} "),
+            (Neon.bright, f"{project}"),
+        ]
+        if sid:
+            parts.append((Neon.dim, f" [{sid[:8]}]"))
+        pct = f"{tokens}/{limit}" if limit else str(tokens)
+        parts.append((Neon.dim, f" {pct}"))
+        return parts
+
+    header_win = Window(
+        content=FormattedTextControl(_header_text),
+        height=1,
+        style="bg:#0d0d1a",
+    )
+
+    def _sep_top_style():
+        info = MODE_INDICATORS.get(agent.mode, MODE_INDICATORS[AgentMode.BUILD])
+        return f"fg:{info['color']} bg:#0d0d1a"
+
+    sep_top = Window(height=1, char="\u2500", style=_sep_top_style)
+
+    # ── Sidebar ──
     def _sidebar_text():
         project = os.path.basename(os.getcwd())
         sid = session_mgr.current
         tokens = count_messages_tokens(agent.messages)
         limit = get_context_limit(router.active_model)
-        todos = todo_store.list() if todo_store else []
+        ts = getattr(agent, "todos", None)
+        todos = ts.list() if ts else []
         branch = ""
         if sid:
             sess = session_mgr.load(sid)
             if sess:
                 branch = sess.get("project", {}).get("branch", "") or ""
+        from ui.sidebar import build_sidebar_text
         return build_sidebar_text(project, sid, tokens, limit, todos, branch)
 
     sidebar_win = Window(
         content=FormattedTextControl(_sidebar_text),
-        width=32,
+        width=lambda: 26 if sidebar_visible else 0,
         style="bg:#1a1a2e",
         wrap_lines=False,
     )
 
+    def _sep_vert_style():
+        info = MODE_INDICATORS.get(agent.mode, MODE_INDICATORS[AgentMode.BUILD])
+        return f"fg:{info['color']} bg:#0d0d1a"
+
+    sep_vert = Window(
+        width=lambda: 1 if sidebar_visible else 0,
+        char="\u2502",
+        style=_sep_vert_style,
+    )
+
     out_ctrl = FormattedTextControl(lambda: _output_buffer)
     out_win = Window(content=out_ctrl, wrap_lines=True)
+
+    sep_bot = Window(height=1, char="\u2500", style="fg:#444466 bg:#0d0d1a")
 
     completer = ThreadedCompleter(LunaCompleter(
         subagent_manager=agent.subagents, commands=cmd_list,
@@ -955,66 +995,154 @@ async def repl(persona=None, command_loader=None, theme_mgr=None, ref_mgr=None, 
     ))
 
     input_field = TextArea(
-        height=2,
+        height=1,
         prompt=_prompt_text,
-        style=_build_prompt_style,
         completer=completer,
         complete_while_typing=True,
         multiline=False,
     )
 
-    async def _accept(buf: Buffer) -> bool:
+    _accept_lock = asyncio.Lock()
+
+    def _accept(buf: Buffer) -> bool:
         text = buf.text.strip()
         if not text:
             return True
-        buf.text = ""
-        try:
-            at_match = AT_MENTION_RE.match(text)
-            if at_match:
-                aname = at_match.group(1)
-                sub_prompt = at_match.group(2)
-                if agent.subagents and (agent_def := agent.subagents.get(aname)):
-                    output_buf.append((f"fg:{Neon.dim}", f"→ @{aname}...\n"))
-                    if _app_ref:
-                        _app_ref.invalidate()
-                    try:
-                        mo = agent.project_config.agent_models if agent.project_config else None
-                        result = await agent.subagents.run(aname, sub_prompt, model_overrides=mo)
-                        if result:
-                            output_buf.append(("", f"\n{result}\n"))
-                    except Exception as e:
-                        output_buf.append((f"fg:{Neon.error}", f"\n✗ @{aname} error: {e}\n"))
-                    if _app_ref:
-                        _app_ref.invalidate()
+        get_app().create_background_task(_accept_impl(text))
+        return False
+
+    async def _accept_impl(text: str):
+        async with _accept_lock:
+            try:
+                at_match = AT_MENTION_RE.match(text)
+                if at_match:
+                    aname = at_match.group(1)
+                    sub_prompt = at_match.group(2)
+                    if agent.subagents and (agent_def := agent.subagents.get(aname)):
+                        output_buf.append((f"fg:{Neon.dim}", f"\u2192 @{aname}...\n"))
+                        if _app_ref:
+                            _app_ref.invalidate()
+                        try:
+                            mo = agent.project_config.agent_models if agent.project_config else None
+                            result = await agent.subagents.run(aname, sub_prompt, model_overrides=mo)
+                            if result:
+                                output_buf.append(("", f"\n{result}\n"))
+                        except Exception as e:
+                            output_buf.append((f"fg:{Neon.error}", f"\n\u2717 @{aname} error: {e}\n"))
+                        if _app_ref:
+                            _app_ref.invalidate()
+                        _save_all()
+                        return
+
+                if text.strip().lower() in ("/debug",):
+                    await run_debug_scan()
+                    return
+
+                if text.startswith("/"):
+                    handled = await handle_slash(text, command_loader=command_loader, theme_mgr=theme_mgr)
+                    if not handled:
+                        output_buf.append((f"fg:{Neon.error}", f"Unknown command: {text}\n"))
+                        if _app_ref:
+                            _app_ref.invalidate()
                     _save_all()
-                    return True
+                    return
 
-            if text.startswith("/"):
-                handled = await handle_slash(text, command_loader=command_loader, theme_mgr=theme_mgr)
-                if not handled:
-                    output_buf.append((f"fg:{Neon.error}", f"Unknown command: {text}\n"))
-                    if _app_ref:
-                        _app_ref.invalidate()
+                await process_message(text)
+            except Exception as e:
+                output_buf.append((f"fg:{Neon.error}", f"\u2717 Error: {e}\n"))
+                if _app_ref:
+                    _app_ref.invalidate()
                 _save_all()
-                return True
+                return
 
-            await process_message(text)
-        except Exception as e:
-            output_buf.append((f"fg:{Neon.error}", f"✗ Error: {e}\n"))
-            if _app_ref:
-                _app_ref.invalidate()
             _save_all()
-            return True
-
-        _save_all()
-        return True
 
     input_field.accept_handler = _accept
 
+    # ── Debug scan ──
+    async def run_debug_scan():
+        async with _accept_lock:
+            await _run_debug_scan_impl()
+
+    async def _run_debug_scan_impl():
+        buf = _output_buffer
+        app = _app_ref
+        buf.append((f"bold {Neon.warning}", "\u25c6 Starting multi-agent debug scan...\n"))
+        if app: app.invalidate()
+
+        prompt = (
+            "You are in debug mode. Your task:\n"
+            "1. Explore the project structure to understand the language, framework, and layout.\n"
+            "2. Create specialized bug-scanning sub-agents using the `create_subagent` tool "
+            "for each major area of the codebase (e.g. frontend, backend, database, config).\n"
+            "3. Run each sub-agent using the `task` tool to scan for bugs, glitches, "
+            "and broken things.\n"
+            "4. Collect all findings and use the `todowrite` tool to create a consolidated "
+            "todo list.\n"
+            "5. Fix each bug using the `edit` and `write` tools.\n\n"
+            "Show progress at each step."
+        )
+
+        async for event in agent.run(prompt):
+            if isinstance(event, TextChunk):
+                buf.append(("", event.text))
+            elif isinstance(event, ToolExecStart):
+                buf.append((f"fg:{Neon.warning}", f"\n  \u26a1 "))
+                buf.append((f"fg:{Neon.secondary}", event.name))
+                args_str = fmt_tool_args(event.arguments)
+                buf.append((f"fg:{Neon.dim}", f"({args_str})"))
+            elif isinstance(event, ToolExecEnd):
+                preview = truncate_result(event.result)
+                buf.append((f"fg:{Neon.dim}", f"\n  \u2192 {preview}"))
+            elif isinstance(event, str):
+                buf.append(("", event))
+            if app: app.invalidate()
+
+        _save_all()
+        buf.append((f"bold {Neon.success}", f"\n\u25c6 Debug scan complete!\n"))
+        if app: app.invalidate()
+
+    # ── Status bar ──
+    def _status_text():
+        model_name = router.active_name or "?"
+        msg_count = len(agent.messages) // 2
+        tokens = count_messages_tokens(agent.messages)
+        limit = get_context_limit(router.active_model)
+        pct = f"t:{tokens}/{limit}" if limit else f"t:{tokens}"
+        return [
+            (Neon.dim, f" {model_name}"),
+            (Neon.dim, f" \u00b7 {msg_count} msgs"),
+            (Neon.dim, f" \u00b7 {pct}"),
+            ("", " "),
+            (Neon.dim, " C-b:bar  C-d:debug  Tab:mode  Esc+m:model  "),
+        ]
+
+    status_win = Window(
+        content=FormattedTextControl(_status_text),
+        height=1,
+        style="bg:#0d0d1a",
+    )
+
+    body = VSplit([sidebar_win, sep_vert, out_win])
     layout = Layout(HSplit([
-        VSplit([sidebar_win, out_win]),
+        header_win,
+        sep_top,
+        body,
+        sep_bot,
         input_field,
-    ]))
+        status_win,
+    ]), focused_element=input_field.window)
+
+    if keybinds is not None:
+        @keybinds.add('c-b')
+        def _toggle_sidebar(event):
+            nonlocal sidebar_visible
+            sidebar_visible = not sidebar_visible
+            event.app.invalidate()
+
+        @keybinds.add('c-d')
+        def _debug_scan(event):
+            event.app.create_background_task(run_debug_scan())
 
     def _save_all():
         session_mgr.save(agent.messages)
@@ -1026,12 +1154,28 @@ async def repl(persona=None, command_loader=None, theme_mgr=None, ref_mgr=None, 
     _orig_file = console.file
     console.file = _ptk_file
 
+    def _app_style() -> PTKStyle:
+        info = MODE_INDICATORS.get(agent.mode, MODE_INDICATORS[AgentMode.BUILD])
+        mc = info["color"]
+        return PTKStyle([
+            ("text-area", "bg:#0d0d1a fg:#e0e0e0"),
+            ("luna_prompt_arrow", f"bold {info['color']}"),
+            ("luna_prompt", f"bold {Neon.primary}"),
+            ("completion-menu", "bg:#1a1a2e"),
+            ("completion-menu.completion", f"bg:#222244 {Neon.bright}"),
+            ("completion-menu.completion.current", f"bg:{mc} #000000"),
+            ("completion-menu.meta", f"bg:#1a1a2e {Neon.dim}"),
+            ("completion-menu.meta.current", f"bg:{mc} #000000"),
+            ("scrollbar", "bg:#222244"),
+            ("scrollbar.button", f"bg:{mc}"),
+        ])
+
     app = Application(
         layout=layout,
         key_bindings=keybinds,
         full_screen=True,
         mouse_support=True,
-        style=PTKStyle([("text-area", "bg:#0d0d1a fg:#e0e0e0")]),
+        style=DynamicStyle(_app_style),
     )
 
     _app_ref = app
@@ -1161,6 +1305,15 @@ async def _async_main():
     agent.todos = todo_store
     for tt in create_todo_tools(todo_store):
         agent.tools.register(tt)
+
+    # Question tool
+    from tools.question_tool import create_question_tool
+    agent.tools.register(create_question_tool(lambda: _app_ref))
+
+    # Sub-agent creation tool
+    from tools.subagent_tool import create_subagent_tool
+    if agent.subagents:
+        agent.tools.register(create_subagent_tool(agent.subagents))
 
     # Leapfrog: File watcher
     async def _on_file_change(changes: list[str]):

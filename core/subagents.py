@@ -110,6 +110,12 @@ class SubagentManager:
         except Exception:
             pass
 
+    def register(self, agent_def: AgentDef) -> None:
+        self._agents[agent_def.name] = agent_def
+
+    def unregister(self, name: str) -> None:
+        self._agents.pop(name, None)
+
     def get(self, name: str) -> AgentDef | None:
         return self._agents.get(name)
 

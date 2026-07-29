@@ -14,47 +14,45 @@ def build_sidebar_text(
     result: list[tuple[str, str]] = []
 
     def section(title: str):
-        result.append(("bold " + Neon.secondary, f"── {title} ──\n"))
+        result.append(("bold " + Neon.secondary, f"\u2500\u2500 {title} \u2500\u2500\n"))
 
-    def line(label: str, value: str, style: str = ""):
-        s = style or Neon.dim
-        result.append((Neon.dim, f" {label} "))
-        result.append((s, f"{value}\n"))
-
-    result.append(("bold " + Neon.primary, "  ✦ Luna\n"))
-    result.append((Neon.dim, "  ─────────────\n"))
+    def short(s: str, maxlen: int) -> str:
+        return s if len(s) <= maxlen else s[: maxlen - 1] + "\u2026"
 
     section("Project")
-    disp_project = project[:26] + "…" if len(project) > 27 else project
-    line("", disp_project, "bold " + Neon.bright)
     if branch:
-        line("", f"({branch})", Neon.secondary)
+        combined = f"{project} ({branch})"
+        combined = short(combined, 22)
+        result.append((Neon.bright, f"  {combined}\n"))
+    else:
+        pname = short(project, 22)
+        result.append((Neon.bright, f"  {pname}\n"))
 
     section("Session")
-    sid = session_id[:11] + "…" if session_id and len(session_id) > 12 else (session_id or "—")
-    line("", sid, Neon.bright)
+    sdisp = short(session_id or "\u2014", 8)
+    result.append((Neon.dim, f"  {sdisp}\n"))
 
     section("Tokens")
     pct = f"{token_count}/{token_limit}" if token_limit else str(token_count)
-    line("", pct, Neon.primary)
+    result.append((Neon.primary, f"  {pct}\n"))
 
     section("Todos")
     if todos:
-        for t in todos[:6]:
-            icon = "✓" if t["status"] == "done" else "○"
+        for t in todos[:5]:
+            icon = "\u2713" if t["status"] == "done" else "\u25cb"
             s = Neon.success if t["status"] == "done" else Neon.dim
-            text = t["content"][:28]
-            if len(t["content"]) > 28:
-                text += "…"
+            text = short(t["content"], 20)
             result.append((s, f"  {icon} {text}\n"))
-        if len(todos) > 6:
-            result.append((Neon.dim, f"  … +{len(todos) - 6} more\n"))
+        remaining = len(todos) - 5
+        if remaining > 0:
+            result.append((Neon.dim, f"  +{remaining} more\n"))
     else:
         result.append((Neon.dim, "  (none)\n"))
 
-    result.append((Neon.dim, "  ─────────────\n"))
-    result.append((Neon.dim, " Tab  toggle mode\n"))
-    result.append((Neon.dim, " Esc+m cycle model\n"))
-    result.append((Neon.dim, "  ─────────────\n"))
+    result.append((Neon.dim, "  " + "\u2500" * 22 + "\n"))
+    result.append((Neon.dim, "  Tab  toggle mode\n"))
+    result.append((Neon.dim, "  Esc+m  cycle model\n"))
+    result.append((Neon.dim, "  C-b  toggle bar\n"))
+    result.append((Neon.dim, "  C-d  debug scan\n"))
 
     return result
