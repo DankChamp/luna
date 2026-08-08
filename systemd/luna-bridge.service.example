@@ -1,0 +1,38 @@
+# Luna bridge service — lets Emma (or anything holding the shared
+# EMMA_API_KEY token) reach Luna over HTTP even when you don't have a
+# terminal open.
+#
+# Install (per-user, no root needed):
+#   mkdir -p ~/.config/systemd/user
+#   cp systemd/luna-bridge.service.example ~/.config/systemd/user/luna-bridge.service
+#   # edit the two paths below (WorkingDirectory / ExecStart) to match where
+#   # you cloned Luna
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now luna-bridge.service
+#   loginctl enable-linger "$USER"   # so it keeps running after you log out
+#
+# Logs:
+#   journalctl --user -u luna-bridge -f
+
+[Unit]
+Description=Luna coding agent — bridge server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/luna
+ExecStart=%h/luna/.venv/bin/python3 %h/luna/luna.py --serve --port 8701
+Restart=on-failure
+RestartSec=3
+
+# Light hardening only. Luna is a coding agent — it needs to read and write
+# whatever project directory it's pointed at (via WorkingDirectory, or `cd`
+# from within a session), so don't sandbox the filesystem here or every edit
+# tool call will fail with permission errors. Real access control belongs in
+# the bridge auth (EMMA_API_KEY) and Luna's own permissions.py rules, not in
+# systemd.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

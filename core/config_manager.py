@@ -1,5 +1,7 @@
 from __future__ import annotations
 import json
+import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,6 +53,11 @@ class ConfigManager:
 
     def _write(self, data: dict):
         self.config_path.write_text(json.dumps(data, indent=2))
+        try:
+            # Holds API keys in plaintext — keep it readable only by the owner.
+            os.chmod(self.config_path, stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
 
     def save(self):
         self._write(self.data)

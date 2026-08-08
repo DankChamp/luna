@@ -15,13 +15,18 @@ from prompt_toolkit.application import Application
 from prompt_toolkit.application.current import get_app
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.history import FileHistory
-from prompt_toolkit.layout import Layout, HSplit, VSplit, Window
+from prompt_toolkit.layout import Layout, HSplit, VSplit, Window, Float, FloatContainer
+from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.styles import Style as PTKStyle, DynamicStyle
 from prompt_toolkit.completion import ThreadedCompleter
+from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
+from prompt_toolkit.filters import Condition
+from prompt_toolkit.layout.containers import ConditionalContainer
 from prompt_toolkit.widgets import TextArea
 
 from ui.completer import LunaCompleter
+from core import paths
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -69,7 +74,7 @@ agent = Agent(settings, router)
 session_mgr = SessionManager(settings.luna_session_dir)
 emma = EmmaBridge(settings.emma_api_url, settings.emma_api_key)
 
-HISTORY_FILE = os.path.expanduser("~/.luna/history.txt")
+HISTORY_FILE = str(paths.state_home() / "history.txt")
 HISTORY_DIR = os.path.dirname(HISTORY_FILE)
 
 AT_MENTION_RE = re.compile(r"@(\w[\w-]*)\s+(.*)")
@@ -115,11 +120,12 @@ def _env_warning():
         console.print(f"[{Neon.dim}]  Create from .env.example or run setup.sh[/{Neon.dim}]")
 
 
+def _project_local_dir(name: str) -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".luna", name)
+
+
 def _init_persona():
-    search_dirs = [
-        os.path.expanduser("~/.luna/persona"),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".luna", "persona"),
-    ]
+    search_dirs = paths.search_dirs("persona") + [_project_local_dir("persona")]
     persona = PersonaLoader(*search_dirs)
     prompt = persona.build_system_prompt()
     if prompt:
@@ -129,20 +135,14 @@ def _init_persona():
 
 
 def _init_skills():
-    skill_dirs = [
-        os.path.expanduser("~/.luna/skills"),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".luna", "skills"),
-    ]
+    skill_dirs = paths.search_dirs("skills") + [_project_local_dir("skills")]
     skill_mgr = SkillManager(*skill_dirs)
     agent.set_skill_manager(skill_mgr)
     return skill_mgr
 
 
 def _init_subagents():
-    search_dirs = [
-        os.path.expanduser("~/.luna/subagents"),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".luna", "subagents"),
-    ]
+    search_dirs = paths.search_dirs("subagents") + [_project_local_dir("subagents")]
     sub_mgr = SubagentManager(router, *search_dirs)
     agent.set_subagent_manager(sub_mgr)
     return sub_mgr
@@ -212,7 +212,7 @@ def print_welcome(persona=None):
         persona_name=pname_display,
     )
     console.print(panel)
-    commands = "/help  /clear  /skill  /subagent  /persona  /provider  /session  /config  /emma  /undo  /theme  /commands  /share  /pr  /issue  /improve  /memory  /exit"
+    commands = "/help  /clear  /skill  /subagent  /persona  /model  /provider  /session  /config  /emma  /undo  /theme  /commands  /share  /pr  /issue  /improve  /memory  /exit"
     console.print(f"[{Neon.dim}]Commands: {commands}[/{Neon.dim}]")
 
 
@@ -224,6 +224,7 @@ def print_help():
             f"[bold {Neon.secondary}]/subagent[/bold {Neon.secondary}]    — List / run subagents",
             f"[bold {Neon.secondary}]/persona[/bold {Neon.secondary}]     — Show / reload persona",
             f"[bold {Neon.secondary}]/config[/bold {Neon.secondary}]      — Show project config",
+            f"[bold {Neon.secondary}]/model[/bold {Neon.secondary}]        — Show / switch model, variant, or provider (fast)",
             f"[bold {Neon.secondary}]/provider[/bold {Neon.secondary}]    — Configure providers",
             f"[bold {Neon.secondary}]/session[/bold {Neon.secondary}]     — List / switch sessions",
             f"[bold {Neon.secondary}]/emma[/bold {Neon.secondary}]        — Check, message, or sync with Emma",
@@ -563,6 +564,72 @@ async def handle_emma(args: list[str]):
         console.print(f"[{Neon.error}]✗ No response from Emma[/{Neon.error}]")
 
 
+async def handle_model(args: list[str]):
+    """Fast one-liner model/provider/variant switching — the /provider panel
+    still exists for deeper config (keys, URLs, testing), but this is the
+    quick path: /model, /model <name>, /model use <provider>, /model next."""
+    providers = await router.list_providers()
+    active = router.active_name
+
+    if not args:
+        active_row = next((p for p in providers if p["name"] == active), None)
+        console.print(f"[{Neon.secondary}]Provider:[/{Neon.secondary}] {active}   "
+                       f"[{Neon.secondary}]Model:[/{Neon.secondary}] {active_row['model'] if active_row else '?'}")
+        with console.status(f"[{Neon.dim}]Fetching variants...[/{Neon.dim}]"):
+            models = await router.cached_models(active)
+        if models:
+            lines = []
+            for m in models:
+                marker = f" [{Neon.success}]←[/{Neon.success}]" if active_row and m == active_row["model"] else ""
+                lines.append(f"  [{Neon.secondary}]•[/{Neon.secondary}] {m}{marker}")
+            console.print(Panel(
+                "\n".join(lines),
+                border_style=Neon.primary,
+                title=f"[{Neon.primary}]Variants — {active}[/{Neon.primary}]",
+                title_align="left",
+                padding=(0, 1),
+            ))
+        other = [p["name"] for p in providers if p["name"] != active]
+        if other:
+            console.print(f"[{Neon.dim}]Other providers: {', '.join(other)}[/{Neon.dim}]")
+        console.print(f"[{Neon.dim}]Usage: /model <variant> | /model use <provider> | /model next | /provider (full panel)[/{Neon.dim}]")
+        return
+
+    if args[0] == "next":
+        model = await router.cycle_model()
+        if model:
+            console.print(f"[{Neon.success}]✓ Model switched to {model}[/{Neon.success}]")
+        else:
+            console.print(f"[{Neon.warning}]⚠ No cached variants to cycle. Run /model first to fetch them.[/{Neon.warning}]")
+        return
+
+    if args[0] == "use":
+        if len(args) < 2:
+            console.print(f"[{Neon.error}]✗ Usage: /model use <provider>[/{Neon.error}]")
+            return
+        target = args[1]
+        names = [p["name"] for p in providers]
+        if target in names:
+            await router.set_active(target)
+            console.print(f"[{Neon.success}]✓ Switched provider to {target}[/{Neon.success}]")
+        else:
+            console.print(f"[{Neon.error}]✗ Unknown provider: {target}. Available: {', '.join(names)}[/{Neon.error}]")
+        return
+
+    # bare name: try as a model variant on the active provider first, then as
+    # a provider name — matches how people actually type it ("/model 70b",
+    # "/model local")
+    name = args[0]
+    names = [p["name"] for p in providers]
+    if name in names:
+        await router.set_active(name)
+        console.print(f"[{Neon.success}]✓ Switched provider to {name}[/{Neon.success}]")
+        return
+
+    await router.reconfigure(active, model=name)
+    console.print(f"[{Neon.success}]✓ Model set to {name}[/{Neon.success}]")
+
+
 async def handle_pr(args: list[str]):
     if not args:
         console.print(f"[{Neon.dim}]Usage: /pr create <title> | /pr list [state][/{Neon.dim}]")
@@ -811,6 +878,8 @@ async def handle_slash(command: str, command_loader=None, theme_mgr=None) -> boo
         await handle_todo(cmd_args)
     elif cmd == "/provider":
         await show_provider_panel(router, console, PromptSession(history=FileHistory(HISTORY_FILE)))
+    elif cmd in ("/model", "/models"):
+        await handle_model(cmd_args)
     elif cmd in ("/session", "/sessions"):
         await handle_session(cmd_args)
     elif cmd == "/emma":
@@ -902,6 +971,8 @@ async def repl(persona=None, command_loader=None, theme_mgr=None, ref_mgr=None, 
 
     await try_load_emma_persona()
 
+    asyncio.create_task(router.cached_models())
+
     if agent.mcp and agent.project_config and agent.project_config.mcp_servers:
         asyncio.create_task(_start_mcp_servers(agent.mcp))
 
@@ -969,7 +1040,7 @@ async def repl(persona=None, command_loader=None, theme_mgr=None, ref_mgr=None, 
 
     sidebar_win = Window(
         content=FormattedTextControl(_sidebar_text),
-        width=lambda: 26 if sidebar_visible else 0,
+        width=26,
         style="bg:#1a1a2e",
         wrap_lines=False,
     )
@@ -979,9 +1050,14 @@ async def repl(persona=None, command_loader=None, theme_mgr=None, ref_mgr=None, 
         return f"fg:{info['color']} bg:#0d0d1a"
 
     sep_vert = Window(
-        width=lambda: 1 if sidebar_visible else 0,
+        width=1,
         char="\u2502",
         style=_sep_vert_style,
+    )
+
+    sidebar_group = ConditionalContainer(
+        VSplit([sep_vert, sidebar_win]),
+        filter=Condition(lambda: sidebar_visible),
     )
 
     out_ctrl = FormattedTextControl(lambda: _output_buffer)
@@ -991,7 +1067,7 @@ async def repl(persona=None, command_loader=None, theme_mgr=None, ref_mgr=None, 
 
     completer = ThreadedCompleter(LunaCompleter(
         subagent_manager=agent.subagents, commands=cmd_list,
-        theme_mgr=theme_mgr, ref_mgr=ref_mgr,
+        theme_mgr=theme_mgr, ref_mgr=ref_mgr, router=router,
     ))
 
     input_field = TextArea(
@@ -1114,7 +1190,7 @@ async def repl(persona=None, command_loader=None, theme_mgr=None, ref_mgr=None, 
             (Neon.dim, f" \u00b7 {msg_count} msgs"),
             (Neon.dim, f" \u00b7 {pct}"),
             ("", " "),
-            (Neon.dim, " C-b:bar  C-d:debug  Tab:mode  Esc+m:model  "),
+            (Neon.dim, " C-b:bar  C-d:debug  Tab:mode  Esc+m:model  Enter:pick  Alt+C:copy  "),
         ]
 
     status_win = Window(
@@ -1123,26 +1199,92 @@ async def repl(persona=None, command_loader=None, theme_mgr=None, ref_mgr=None, 
         style="bg:#0d0d1a",
     )
 
-    body = VSplit([sidebar_win, sep_vert, out_win])
-    layout = Layout(HSplit([
-        header_win,
-        sep_top,
-        body,
-        sep_bot,
-        input_field,
-        status_win,
-    ]), focused_element=input_field.window)
+    body = VSplit([out_win, sidebar_group])
+    root_container = FloatContainer(
+        content=HSplit([
+            header_win,
+            sep_top,
+            body,
+            sep_bot,
+            input_field,
+            status_win,
+        ]),
+        floats=[
+            Float(
+                xcursor=True,
+                ycursor=True,
+                attach_to_window=input_field.window,
+                content=CompletionsMenu(max_height=12, scroll_offset=1),
+            ),
+        ],
+    )
+    layout = Layout(root_container, focused_element=input_field.window)
 
-    if keybinds is not None:
-        @keybinds.add('c-b')
-        def _toggle_sidebar(event):
-            nonlocal sidebar_visible
-            sidebar_visible = not sidebar_visible
-            event.app.invalidate()
+    # ── Key bindings ──
+    app_binds = KeyBindings()
 
-        @keybinds.add('c-d')
-        def _debug_scan(event):
-            event.app.create_background_task(run_debug_scan())
+    from core.clipboard import PtkClipboard
+    ptk_clipboard = PtkClipboard()
+
+    def _copy_text(what: str, text: str):
+        clip = ptk_clipboard.backend
+        if clip is not None:
+            clip.copy(text)
+        backend = "OS clipboard" if clip is not None else "memory-only"
+        output_buf.append((Neon.dim, f"  [clip] {what}: {len(text)} chars → {backend}\n"))
+        if _app_ref:
+            _app_ref.invalidate()
+
+    def _output_plain() -> str:
+        return "".join(frag for _, frag in _output_buffer)
+
+    def _last_reply() -> str:
+        for m in reversed(agent.messages):
+            if m.get("role") == "assistant":
+                return m.get("content", "") or ""
+        return ""
+
+    @app_binds.add('alt+c')
+    def _copy_last_reply(event):
+        text = _last_reply() or _output_plain()
+        _copy_text("last reply", text)
+
+    @app_binds.add('alt+shift+c')
+    def _copy_all_output(event):
+        _copy_text("output", _output_plain())
+
+    @app_binds.add('alt+w')
+    def _copy_selection(event):
+        b = event.current_buffer
+        if b.selection_state:
+            _copy_text("selection", b.copy_selection().text)
+
+    @app_binds.add('enter')
+    @app_binds.add('c-m')
+    @app_binds.add('c-j')
+    def _enter_or_complete(event):
+        b = event.current_buffer
+        if b.complete_state is not None:
+            st = b.complete_state
+            if st.current_completion is None and st.completions:
+                st.go_to_index(0)
+            if st.current_completion is not None:
+                b.apply_completion(b.complete_state.current_completion)
+                return
+            b.complete_state = None
+        b.validate_and_handle()
+
+    @app_binds.add('c-b')
+    def _toggle_sidebar(event):
+        nonlocal sidebar_visible
+        sidebar_visible = not sidebar_visible
+        event.app.invalidate()
+
+    @app_binds.add('c-d')
+    def _debug_scan(event):
+        event.app.create_background_task(run_debug_scan())
+
+    final_binds = merge_key_bindings([app_binds, keybinds]) if keybinds is not None else app_binds
 
     def _save_all():
         session_mgr.save(agent.messages)
@@ -1172,9 +1314,10 @@ async def repl(persona=None, command_loader=None, theme_mgr=None, ref_mgr=None, 
 
     app = Application(
         layout=layout,
-        key_bindings=keybinds,
+        key_bindings=final_binds,
         full_screen=True,
-        mouse_support=True,
+        mouse_support=False,
+        clipboard=ptk_clipboard,
         style=DynamicStyle(_app_style),
     )
 
@@ -1223,17 +1366,11 @@ async def _async_main():
     _init_mcp()
 
     # Phase 5: Custom commands
-    cmd_dirs = [
-        os.path.expanduser("~/.luna/commands"),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".luna", "commands"),
-    ]
+    cmd_dirs = paths.search_dirs("commands") + [_project_local_dir("commands")]
     command_loader = CommandLoader(*cmd_dirs)
 
     # Phase 5: Custom tools
-    tool_dirs = [
-        os.path.expanduser("~/.luna/tools"),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".luna", "tools"),
-    ]
+    tool_dirs = paths.search_dirs("tools") + [_project_local_dir("tools")]
     register_custom_tools(agent.tools, *tool_dirs)
 
     # Phase 5: References
@@ -1352,7 +1489,7 @@ async def _async_main():
 
     if args.serve:
         from bridge.server import start_server
-        start_server(agent, port=args.port)
+        start_server(agent, port=args.port, bridge_token=settings.emma_api_key)
         return
     elif args.prompt:
         await one_shot(args.prompt)

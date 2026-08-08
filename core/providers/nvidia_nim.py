@@ -140,5 +140,13 @@ class NvidiaNIMProvider(AIProvider):
                     import asyncio
                     await asyncio.sleep(2 ** attempt)
                     continue
-                yield TextChunk(text=f"[Network Error: {e}]")
+                hint = ""
+                err = str(e)
+                if "[Errno -2]" in err or "Name or service not known" in err:
+                    hint = (
+                        f" — host in base_url '{self.base_url}' does not resolve. "
+                        "Check the provider's base_url in ~/.luna/config.json "
+                        "(or the NVIDIA_NIM_BASE_URL / *_BASE_URL vars in .env)."
+                    )
+                yield TextChunk(text=f"[Network Error: {e}{hint}]")
                 return

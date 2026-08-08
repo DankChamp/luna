@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
 import struct
 import threading
@@ -14,6 +15,18 @@ from core.agent import Agent
 
 
 WS_MAGIC = "258EAFA5-E914-47DA-95CA-5AB5FB11B5D3"
+
+# Endpoints that let a caller execute the agent (bash/tools included) or write
+# into memory as a trusted source ("emma"). These require the shared bridge
+# token below. Read-only status endpoints stay open since they're harmless.
+_PRIVILEGED_PATHS = {"/api/chat", "/api/ingest", "/ws"}
+
+
+def _token_matches(provided: str, expected: str) -> bool:
+    """Constant-time comparison so auth can't be brute-forced via timing."""
+    if not expected:
+        return False
+    return hmac.compare_digest(provided or "", expected)
 
 
 def _ws_accept(key: str) -> str:
@@ -128,11 +141,31 @@ class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 class _Handler(BaseHTTPRequestHandler):
     agent: Agent | None = None
+    bridge_token: str = ""
     _ws_clients: list[_Handler] = []
     _ws_lock: threading.Lock = threading.Lock()
 
     def log_message(self, fmt, *args):
         pass
+
+    def _bearer_token(self) -> str:
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            return auth[len("Bearer "):].strip()
+        return ""
+
+    def _authorized(self) -> bool:
+        """Only Emma (holder of the shared bridge token) may call privileged
+        routes. If no token is configured, Luna refuses privileged calls
+        outright rather than silently trusting anyone who can reach the port —
+        Luna sits below Emma in the trust hierarchy and should never be able
+        to be puppeted or fed fake "Emma" context by an unauthenticated caller."""
+        if not _Handler.bridge_token:
+            return False
+        return _token_matches(self._bearer_token(), _Handler.bridge_token)
+
+    def _reject_unauthorized(self):
+        self._send_json(401, {"error": "unauthorized: missing or invalid bridge token"})
 
     def _send_json(self, status: int, data: dict):
         body = json.dumps(data).encode()
@@ -171,6 +204,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send_json(200, info)
 
         if path == "/api/chat":
+            if not self._authorized():
+                return self._reject_unauthorized()
             qs = parse_qs(parsed.query)
             message = qs.get("message", [None])[0]
             system = None
@@ -199,6 +234,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send_json(200, {"messages": recent, "count": len(msgs)})
 
         if path == "/ws":
+            if not self._authorized():
+                return self._reject_unauthorized()
             self._handle_ws()
             return
 
@@ -207,6 +244,8 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         if parsed.path == "/api/chat":
+            if not self._authorized():
+                return self._reject_unauthorized()
             cl = int(self.headers.get("Content-Length", 0))
             if not cl:
                 return self._send_json(400, {"error": "missing body"})
@@ -227,6 +266,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send_json(500, {"error": "no output"})
 
         if parsed.path == "/api/ingest":
+            if not self._authorized():
+                return self._reject_unauthorized()
             cl = int(self.headers.get("Content-Length", 0))
             if not cl:
                 return self._send_json(400, {"error": "missing body"})
@@ -340,8 +381,25 @@ class _Handler(BaseHTTPRequestHandler):
         return full if full else None
 
 
-def start_server(agent: Agent, host: str = "127.0.0.1", port: int = 8701):
+def start_server(agent: Agent, host: str = "127.0.0.1", port: int = 8701, bridge_token: str = ""):
     _Handler.agent = agent
+    _Handler.bridge_token = bridge_token
+
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        print(
+            f"⚠  WARNING: binding to {host} exposes Luna beyond this machine. "
+            "Make sure a bridge token is set (EMMA_API_KEY in .env) and that "
+            "this port is firewalled from anything but Emma."
+        )
+    if not bridge_token:
+        print(
+            "⚠  WARNING: no bridge token configured (EMMA_API_KEY is empty). "
+            "/api/chat and /api/ingest are DISABLED until you set one — "
+            "Luna will not accept commands or 'Emma' context from anyone "
+            "without it. Set EMMA_API_KEY in .env on both Luna and Emma to "
+            "the same shared secret to enable the bridge."
+        )
+
     server = _ThreadingHTTPServer((host, port), _Handler)
     print(f"Luna server listening on http://{host}:{port}")
     try:

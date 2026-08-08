@@ -1,7 +1,14 @@
 from __future__ import annotations
 import asyncio
+import os
+import shutil
 
 from .registry import ToolDef
+
+# asyncio.create_subprocess_shell uses /bin/sh by default on POSIX, which on
+# many Linux distros is dash — no `[[`, no `pipefail`, no process substitution.
+# Models write bash, so give them real bash when it's on the system.
+_SHELL = shutil.which("bash") or "/bin/sh"
 
 
 async def run_command(command: str, timeout: int = 120000) -> str:
@@ -10,6 +17,8 @@ async def run_command(command: str, timeout: int = 120000) -> str:
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            executable=_SHELL,
+            cwd=os.getcwd(),
         )
         try:
             stdout, stderr = await asyncio.wait_for(

@@ -33,8 +33,12 @@ def build_sidebar_text(
     result.append((Neon.dim, f"  {sdisp}\n"))
 
     section("Tokens")
-    pct = f"{token_count}/{token_limit}" if token_limit else str(token_count)
-    result.append((Neon.primary, f"  {pct}\n"))
+    if token_limit:
+        pct = round(token_count / token_limit * 100)
+        pct = min(pct, 100)
+        result.append((Neon.primary, f"  {pct}%\n"))
+    else:
+        result.append((Neon.primary, f"  {token_count}\n"))
 
     section("Todos")
     if todos:
@@ -54,5 +58,6 @@ def build_sidebar_text(
     result.append((Neon.dim, "  Esc+m  cycle model\n"))
     result.append((Neon.dim, "  C-b  toggle bar\n"))
     result.append((Neon.dim, "  C-d  debug scan\n"))
+    result.append((Neon.dim, "  Alt+C  copy reply\n"))
 
     return result

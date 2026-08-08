@@ -28,9 +28,24 @@ LOCAL_DEFAULT_MODEL=llama3.1:8b
 PREFER_LOCAL=true
 
 EMMA_API_URL=http://localhost:8000
+# Shared secret between Luna and Emma. Set the SAME value on both sides.
+# Luna sends it as a Bearer token when calling Emma, and requires it as a
+# Bearer token on incoming /api/chat and /api/ingest calls when running
+# `luna --serve`. Leave empty to keep the bridge fully disabled.
 EMMA_API_KEY=
 EOF
     echo "  Edit .env with your API keys before running."
 fi
 
+# .env holds API keys — keep it readable only by you.
+chmod 600 .env 2>/dev/null || true
+
+# Same for the local provider config Luna writes at runtime, if it exists.
+if [ -f "$HOME/.luna/config.json" ]; then
+    chmod 600 "$HOME/.luna/config.json" 2>/dev/null || true
+fi
+
 echo "Done. Run: ./luna"
+echo ""
+echo "To run Luna as a background service for Emma to talk to (systemd, Linux):"
+echo "  see systemd/luna-bridge.service.example"

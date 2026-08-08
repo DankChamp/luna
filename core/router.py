@@ -17,7 +17,7 @@ class AIRouter:
         self.config = config
         self._providers: dict[str, AIProvider] = {}
         self._active: str | None = None
-        self._model_cache: list[str] | None = None
+        self._model_cache: dict[str, list[str]] | None = None
         self._model_index: int = 0
         self._sync()
 
@@ -69,16 +69,26 @@ class AIRouter:
 
     async def cached_models(self, name: str | None = None) -> list[str]:
         target = name or self._active
-        if self._model_cache is None:
+        cache = self._model_cache or {}
+        if target not in cache:
             provider = await self.get_provider(target)
             if hasattr(provider, "list_models"):
                 try:
-                    self._model_cache = await provider.list_models()
+                    cache[target] = await provider.list_models()
                 except NotImplementedError:
-                    self._model_cache = []
+                    cache[target] = []
             else:
-                self._model_cache = []
-        return self._model_cache or []
+                cache[target] = []
+            self._model_cache = cache
+        return cache.get(target) or []
+
+    def cached_models_sync(self, name: str | None = None) -> list[str]:
+        """Whatever's already cached, with no network call — for use in
+        synchronous contexts like tab-completion."""
+        return (self._model_cache or {}).get(name or self._active) or []
+
+    def provider_names_sync(self) -> list[str]:
+        return list(self._providers.keys())
 
     async def cycle_model(self) -> str:
         models = await self.cached_models()
