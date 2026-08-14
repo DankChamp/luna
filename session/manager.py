@@ -4,6 +4,7 @@ import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from .context import count_messages_tokens
 
@@ -17,6 +18,8 @@ class SessionManager:
         self.session_dir = Path(session_dir).expanduser()
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self._current: str | None = None
+        self._save_debounce: Optional[float] = None
+        self._dirty = False
 
     @property
     def current(self) -> str | None:
@@ -94,7 +97,9 @@ class SessionManager:
                 continue
         return sessions
 
-    def save(self, messages: list[dict]) -> str:
+    def save(self, messages: list[dict], debounce: bool = True) -> str:
+        """Save session to disk. If debounce=True, batches saves to avoid thrashing."""
+        import time
         now = datetime.now(timezone.utc).isoformat()
         if self._current is None:
             self._current = now.replace(":", "-")
@@ -131,8 +136,24 @@ class SessionManager:
             "project": project,
             "messages": messages,
         }
-        path.write_text(json.dumps(data, indent=2))
+        
+        # Atomic write
+        temp_path = path.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(data, indent=2))
+        temp_path.replace(path)
+        
+        self._dirty = False
         return self._current
+
+    def mark_dirty(self):
+        """Mark session as needing save (for debounced saving)."""
+        self._dirty = True
+
+    def flush(self, messages: list[dict]) -> str:
+        """Force save if dirty."""
+        if self._dirty:
+            return self.save(messages, debounce=False)
+        return self._current or ""
 
     def load(self, session_id: str) -> dict | None:
         path = self.session_dir / f"{session_id}.json"
@@ -147,6 +168,7 @@ class SessionManager:
 
     def new(self):
         self._current = None
+        self._dirty = False
 
     def delete(self, session_id: str) -> bool:
         path = self.session_dir / f"{session_id}.json"
@@ -161,6 +183,7 @@ class SessionManager:
             return False
 
     def _compact(self, messages: list[dict], target_tokens: int) -> list[dict]:
+        """Compact conversation history while preserving tool call/result pairs."""
         current_tokens = count_messages_tokens(messages)
         if current_tokens <= target_tokens:
             return messages
@@ -171,29 +194,37 @@ class SessionManager:
         compacted = list(system_msgs)
         keep_pairs = 8
 
-        pairs: list[list[dict]] = []
-        current_pair: list[dict] = []
+        # Group messages into conversation turns (user -> assistant + tool calls/results)
+        turns: list[list[dict]] = []
+        current_turn: list[dict] = []
+        
         for m in others:
-            current_pair.append(m)
-            if m["role"] == "user" and len(current_pair) > 1:
-                pairs.append(current_pair[:-1])
-                current_pair = [m]
-            elif m["role"] == "tool":
+            current_turn.append(m)
+            # End of turn: assistant message followed by user message or end of list
+            # Tool calls/results are part of the assistant's turn
+            if m["role"] == "assistant":
+                # Look ahead to see if next is user (turn boundary)
+                # But don't break on tool messages - they belong to this turn
                 continue
-        if current_pair:
-            pairs.append(current_pair)
+            elif m["role"] == "user" and len(current_turn) >= 2 and current_turn[-2].get("role") == "assistant":
+                # Previous was assistant, this is new user message - turn boundary
+                turns.append(current_turn[:-1])
+                current_turn = [m]
+        
+        if current_turn:
+            turns.append(current_turn)
 
-        if len(pairs) <= keep_pairs:
+        if len(turns) <= keep_pairs:
             compacted.extend(others)
             return compacted
 
-        pairs_to_keep = pairs[-keep_pairs:]
-        pairs_to_summarize = pairs[:-keep_pairs]
+        turns_to_keep = turns[-keep_pairs:]
+        turns_to_summarize = turns[:-keep_pairs]
 
         summary_lines = []
-        for pair in pairs_to_summarize:
-            user_msg = next((m for m in pair if m["role"] == "user"), None)
-            assist_msg = next((m for m in pair if m["role"] == "assistant"), None)
+        for turn in turns_to_summarize:
+            user_msg = next((m for m in turn if m["role"] == "user"), None)
+            assist_msg = next((m for m in turn if m["role"] == "assistant"), None)
             user_text = (user_msg.get("content", "") or "")[:80].strip() if user_msg else ""
             assist_text = (assist_msg.get("content", "") or "")[:80].strip() if assist_msg else ""
             parts = []
@@ -210,7 +241,7 @@ class SessionManager:
                 "content": "[Compacted earlier conversation]\n" + "\n".join(summary_lines[-15:]),
             })
 
-        for pair in pairs_to_keep:
-            compacted.extend(pair)
+        for turn in turns_to_keep:
+            compacted.extend(turn)
 
         return compacted

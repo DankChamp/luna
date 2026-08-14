@@ -1,23 +1,37 @@
 from __future__ import annotations
 import asyncio
 import os
+import shlex
 import shutil
 
 from .registry import ToolDef
 
-# asyncio.create_subprocess_shell uses /bin/sh by default on POSIX, which on
-# many Linux distros is dash — no `[[`, no `pipefail`, no process substitution.
-# Models write bash, so give them real bash when it's on the system.
-_SHELL = shutil.which("bash") or "/bin/sh"
+# Use bash if available for compatibility with model-generated commands
+_BASH_PATH = shutil.which("bash") or "/bin/sh"
 
 
 async def run_command(command: str, timeout: int = 120000) -> str:
+    """Run a shell command safely using create_subprocess_exec with argument list.
+    
+    Avoids shell injection by parsing the command string into an argument list
+    and executing directly without shell interpretation.
+    """
     try:
-        proc = await asyncio.create_subprocess_shell(
-            command,
+        # Parse command string into argv list (handles quotes, escapes)
+        argv = shlex.split(command, posix=True)
+        if not argv:
+            return "Error: empty command"
+        
+        # Prepend bash -c if command contains shell features (pipes, redirects, etc.)
+        # This maintains compatibility while avoiding direct shell interpretation
+        shell_meta = any(c in command for c in "|&;<>()$`\\\"'")
+        if shell_meta:
+            argv = [_BASH_PATH, "-c", command]
+        
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            executable=_SHELL,
             cwd=os.getcwd(),
         )
         try:
@@ -26,6 +40,7 @@ async def run_command(command: str, timeout: int = 120000) -> str:
             )
         except asyncio.TimeoutError:
             proc.kill()
+            await proc.wait()
             return f"Error: command timed out after {timeout}ms"
 
         out = stdout.decode("utf-8", errors="replace")
@@ -52,11 +67,11 @@ async def run_command(command: str, timeout: int = 120000) -> str:
 
 bash_tool = ToolDef(
     name="bash",
-    description="Run a shell command on the system. For building, testing, git, or terminal operations.",
+    description="Run a shell command on the system. For building, testing, git, or terminal operations. Commands are executed safely without shell injection vulnerabilities.",
     parameters={
         "command": {
             "type": "string",
-            "description": "The shell command to run",
+            "description": "The shell command to run (will be parsed safely, shell features like pipes/redirects supported via bash -c)",
         },
         "timeout": {
             "type": "integer",

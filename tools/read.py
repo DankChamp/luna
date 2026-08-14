@@ -1,11 +1,15 @@
 from __future__ import annotations
 from pathlib import Path
 
+from core.paths import validate_path_within_workspace
 from .registry import ToolDef
 
 
 async def read_file(path: str, offset: int = 0, limit: int = 2000) -> str:
-    p = Path(path).expanduser().resolve()
+    try:
+        p = validate_path_within_workspace(path)
+    except ValueError as e:
+        return f"Error: {e}"
     if not p.exists():
         return f"Error: file not found: {path}"
     if not p.is_file():
@@ -39,11 +43,11 @@ async def read_file(path: str, offset: int = 0, limit: int = 2000) -> str:
 
 read_tool = ToolDef(
     name="read",
-    description="Read a file. Use offset to start from a specific line, limit to control how many lines.",
+    description="Read a file. Use offset to start from a specific line, limit to control how many lines. Path must be within workspace.",
     parameters={
         "path": {
             "type": "string",
-            "description": "Absolute path to the file to read",
+            "description": "Path to the file to read (relative to workspace root)",
         },
         "offset": {
             "type": "integer",

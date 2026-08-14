@@ -1,11 +1,15 @@
 from __future__ import annotations
 from pathlib import Path
 
+from core.paths import validate_path_within_workspace
 from .registry import ToolDef
 
 
 async def edit_file(path: str, old_string: str, new_string: str) -> str:
-    p = Path(path).expanduser().resolve()
+    try:
+        p = validate_path_within_workspace(path)
+    except ValueError as e:
+        return f"Error: {e}"
     if not p.exists():
         return f"Error: file not found: {path}"
     try:
@@ -21,7 +25,10 @@ async def edit_file(path: str, old_string: str, new_string: str) -> str:
 
     text = text.replace(old_string, new_string, 1)
     try:
-        p.write_text(text, encoding="utf-8")
+        # Atomic write
+        temp_path = p.with_suffix(p.suffix + ".tmp")
+        temp_path.write_text(text, encoding="utf-8")
+        temp_path.replace(p)
         return f"Applied edit to {path}"
     except Exception as e:
         return f"Error writing file: {e}"
@@ -29,11 +36,11 @@ async def edit_file(path: str, old_string: str, new_string: str) -> str:
 
 edit_tool = ToolDef(
     name="edit",
-    description="Edit a file by finding and replacing exact text. Use instead of write for targeted changes.",
+    description="Edit a file by finding and replacing exact text. Use instead of write for targeted changes. Path must be within workspace.",
     parameters={
         "path": {
             "type": "string",
-            "description": "Absolute path to the file to edit",
+            "description": "Path to the file to edit (relative to workspace root)",
         },
         "old_string": {
             "type": "string",

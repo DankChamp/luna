@@ -5,6 +5,7 @@ from typing import Callable, Awaitable, Optional
 
 from core.providers.base import ToolCall
 from core.permissions import PermissionEvaluator
+from core.tool_executor import ToolExecutor, ExecutionResult
 
 
 ToolHandler = Callable[..., Awaitable[str]]
@@ -28,6 +29,7 @@ class ToolRegistry:
         self._history_index: int = -1
         self.formatter: Optional[Callable[[str], Awaitable[str]]] = None
         self.lsp_diagnostics: Optional[Callable[[str], Awaitable[list[dict]]]] = None
+        self._executor: Optional[ToolExecutor] = None
 
     def register(self, tool: ToolDef):
         self._tools[tool.name] = tool
@@ -38,6 +40,10 @@ class ToolRegistry:
     def set_permissions(self, evaluator: PermissionEvaluator | None):
         if evaluator is not None:
             self._permissions = evaluator
+
+    def set_executor(self, executor: ToolExecutor):
+        """Set external ToolExecutor for advanced execution pipeline."""
+        self._executor = executor
 
     def get(self, name: str) -> ToolDef | None:
         return self._tools.get(name)
@@ -62,6 +68,12 @@ class ToolRegistry:
         ]
 
     async def execute(self, call: ToolCall) -> str:
+        # If external executor is set, use it
+        if self._executor:
+            result = await self._executor.execute(call)
+            return result
+        
+        # Fallback to built-in execution
         if call.name in self._blocked:
             return f"Error: tool '{call.name}' is not available in the current mode"
 

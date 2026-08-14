@@ -6,12 +6,15 @@ import hashlib
 import hmac
 import json
 import struct
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from socketserver import ThreadingMixIn
-from urllib.parse import urlparse, parse_qs
+import traceback
+from contextlib import asynccontextmanager
+from typing import Optional
 
-from core.agent import Agent
+from aiohttp import web
+from aiohttp.web import Request, Response, WebSocketResponse
+
+from core.agent_core import AgentCore
+from core.observability import get_tracer, get_logger, trace_span, get_metrics, MetricNames
 
 
 WS_MAGIC = "258EAFA5-E914-47DA-95CA-5AB5FB11B5D3"
@@ -19,7 +22,7 @@ WS_MAGIC = "258EAFA5-E914-47DA-95CA-5AB5FB11B5D3"
 # Endpoints that let a caller execute the agent (bash/tools included) or write
 # into memory as a trusted source ("emma"). These require the shared bridge
 # token below. Read-only status endpoints stay open since they're harmless.
-_PRIVILEGED_PATHS = {"/api/chat", "/api/ingest", "/ws"}
+_PRIVILEGED_PATHS = {"/api/chat", "/api/ingest", "/ws", "/api/delegate"}
 
 
 def _token_matches(provided: str, expected: str) -> bool:
@@ -33,17 +36,6 @@ def _ws_accept(key: str) -> str:
     return base64.b64encode(
         hashlib.sha1((key + WS_MAGIC).encode()).digest()
     ).decode()
-
-
-def _encode_ws_frame(payload: bytes, opcode: int = 0x1) -> bytes:
-    header = bytearray([0x80 | opcode])
-    if len(payload) < 126:
-        header.append(len(payload))
-    elif len(payload) < 65536:
-        header += bytearray([126]) + struct.pack(">H", len(payload))
-    else:
-        header += bytearray([127]) + struct.pack(">Q", len(payload))
-    return bytes(header) + payload
 
 
 HTML_PAGE = """<!DOCTYPE html>
@@ -119,7 +111,7 @@ function addMsg(role, text) {
   msgs.appendChild(div);
   return div;
 }
-function escapeHtml(t) { return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escapeHtml(t) { return t.replace(/&/g,'&').replace(/</g,'<').replace(/>/g,'>'); }
 function sendMsg() {
   const text = input.value.trim();
   if (!text) return;
@@ -134,276 +126,457 @@ input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendMsg(); });
 </html>"""
 
 
-class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
-    allow_reuse_address = True
-    daemon_threads = True
+class BridgeServer:
+    """Async bridge server using aiohttp for proper async support."""
+    
+    def __init__(self, agent: 'AgentCore', bridge_token: str = ""):
+        self.agent = agent
+        self.bridge_token = bridge_token
+        self._ws_clients: set[web.WebSocketResponse] = set()
+        self._ws_lock = asyncio.Lock()
+        self._app: Optional[web.Application] = None
+        self._runner: Optional[web.AppRunner] = None
+        self._site: Optional[web.TCPSite] = None
+        
+        # Observability
+        self._tracer = get_tracer("luna")
+        self._logger = get_logger("luna.bridge")
+        self._metrics = get_metrics()
 
-
-class _Handler(BaseHTTPRequestHandler):
-    agent: Agent | None = None
-    bridge_token: str = ""
-    _ws_clients: list[_Handler] = []
-    _ws_lock: threading.Lock = threading.Lock()
-
-    def log_message(self, fmt, *args):
-        pass
-
-    def _bearer_token(self) -> str:
-        auth = self.headers.get("Authorization", "")
+    def _bearer_token(self, request: Request) -> str:
+        auth = request.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
             return auth[len("Bearer "):].strip()
         return ""
 
-    def _authorized(self) -> bool:
-        """Only Emma (holder of the shared bridge token) may call privileged
-        routes. If no token is configured, Luna refuses privileged calls
-        outright rather than silently trusting anyone who can reach the port —
-        Luna sits below Emma in the trust hierarchy and should never be able
-        to be puppeted or fed fake "Emma" context by an unauthenticated caller."""
-        if not _Handler.bridge_token:
+    def _authorized(self, request: Request) -> bool:
+        """Only Emma (holder of the shared bridge token) may call privileged routes."""
+        if not self.bridge_token:
             return False
-        return _token_matches(self._bearer_token(), _Handler.bridge_token)
+        return _token_matches(self._bearer_token(request), self.bridge_token)
 
-    def _reject_unauthorized(self):
-        self._send_json(401, {"error": "unauthorized: missing or invalid bridge token"})
+    async def _handle_index(self, request: Request) -> Response:
+        return web.Response(text=HTML_PAGE, content_type="text/html")
 
-    def _send_json(self, status: int, data: dict):
-        body = json.dumps(data).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    async def _handle_health(self, request: Request) -> Response:
+        return web.json_response({"status": "ok"})
 
-    def _send_html(self, html: str):
-        body = html.encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    async def _handle_status(self, request: Request) -> Response:
+        info = {
+            "status": "ok",
+            "provider": self.agent._get_provider_name(),
+            "mode": self.agent.config.mode.value,
+            "messages": len(self.agent.messages),
+            "tools": len(self.agent.tools.definitions),
+        }
+        return web.json_response(info)
 
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        path = parsed.path.rstrip("/")
-
-        if path == "/" or path == "":
-            return self._send_html(HTML_PAGE)
-
-        if path == "/health":
-            return self._send_json(200, {"status": "ok"})
-
-        if path == "/status":
-            info = {
-                "status": "ok",
-                "provider": _Handler.agent.provider_name,
-                "mode": _Handler.agent.mode.value,
-                "messages": len(_Handler.agent.messages),
-                "tools": len(_Handler.agent.tools.definitions),
-            }
-            return self._send_json(200, info)
-
-        if path == "/api/chat":
-            if not self._authorized():
-                return self._reject_unauthorized()
-            qs = parse_qs(parsed.query)
-            message = qs.get("message", [None])[0]
-            system = None
-            if not message:
-                cl = int(self.headers.get("Content-Length", 0))
-                if cl:
-                    body = self.rfile.read(cl)
-                    data = json.loads(body)
-                    message = data.get("message")
-                    system = data.get("system")
-            if not message:
-                return self._send_json(400, {"error": "missing message"})
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+    async def _handle_api_chat(self, request: Request) -> Response:
+        if not self._authorized(request):
+            return web.json_response({"error": "unauthorized: missing or invalid bridge token"}, status=401)
+        
+        message = None
+        system = ""
+        
+        if request.method == "GET":
+            message = request.query.get("message")
+        else:
             try:
-                result = loop.run_until_complete(self._run_agent(message, system=system or ""))
-            finally:
-                loop.close()
-            if result:
-                return self._send_json(200, {"response": result})
-            return self._send_json(500, {"error": "no output"})
-
-        if path == "/history":
-            msgs = _Handler.agent.messages
-            recent = [{"role": m.get("role"), "content": m.get("content", "")[:300]} for m in msgs[-20:]] if msgs else []
-            return self._send_json(200, {"messages": recent, "count": len(msgs)})
-
-        if path == "/ws":
-            if not self._authorized():
-                return self._reject_unauthorized()
-            self._handle_ws()
-            return
-
-        self._send_json(404, {"error": "not found"})
-
-    def do_POST(self):
-        parsed = urlparse(self.path)
-        if parsed.path == "/api/chat":
-            if not self._authorized():
-                return self._reject_unauthorized()
-            cl = int(self.headers.get("Content-Length", 0))
-            if not cl:
-                return self._send_json(400, {"error": "missing body"})
-            body = self.rfile.read(cl)
-            data = json.loads(body)
-            message = data.get("message", "")
-            system = data.get("system", "")
-            if not message:
-                return self._send_json(400, {"error": "missing message"})
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                result = loop.run_until_complete(self._run_agent(message, system=system))
-            finally:
-                loop.close()
-            if result:
-                return self._send_json(200, {"response": result})
-            return self._send_json(500, {"error": "no output"})
-
-        if parsed.path == "/api/ingest":
-            if not self._authorized():
-                return self._reject_unauthorized()
-            cl = int(self.headers.get("Content-Length", 0))
-            if not cl:
-                return self._send_json(400, {"error": "missing body"})
-            body = self.rfile.read(cl)
-            data = json.loads(body)
-            fact = data.get("fact", "")
-            tags = data.get("tags", [])
-            if not fact:
-                return self._send_json(400, {"error": "missing fact"})
-            mem = getattr(_Handler.agent, "memory", None)
-            if mem:
-                mem.add_fact(fact, source="emma")
-            return self._send_json(200, {"ok": True, "fact": fact})
-
-        self._send_json(404, {"error": "not found"})
-
-    def _read_ws_frame(self) -> tuple[int, bytes] | None:
-        header = self.rfile.read(2)
-        if len(header) < 2:
-            return None
-        b0, b1 = header[0], header[1]
-        opcode = b0 & 0x0F
-        masked = (b1 & 0x80) != 0
-        length = b1 & 0x7F
-        if length == 126:
-            ext = self.rfile.read(2)
-            if len(ext) < 2:
-                return None
-            length = struct.unpack(">H", ext)[0]
-        elif length == 127:
-            ext = self.rfile.read(8)
-            if len(ext) < 8:
-                return None
-            length = struct.unpack(">Q", ext)[0]
-        mask = self.rfile.read(4) if masked else b""
-        payload = self.rfile.read(length)
-        if len(payload) < length:
-            return None
-        if masked:
-            payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-        return opcode, payload
-
-    def _handle_ws(self):
-        key = self.headers.get("Sec-WebSocket-Key", "")
-        self.send_response(101)
-        self.send_header("Upgrade", "websocket")
-        self.send_header("Connection", "Upgrade")
-        self.send_header("Sec-WebSocket-Accept", _ws_accept(key))
-        self.end_headers()
-        with _Handler._ws_lock:
-            _Handler._ws_clients.append(self)
-        try:
-            while True:
-                result = self._read_ws_frame()
-                if result is None:
-                    break
-                opcode, payload = result
-                if opcode == 0x8:
-                    break
-                if opcode == 0x1:
-                    data = json.loads(payload.decode("utf-8"))
-                    if data.get("type") == "chat":
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        loop.run_until_complete(self._stream_agent(data["message"]))
-                        loop.close()
-                elif opcode == 0x9:
-                    self.wfile.write(_encode_ws_frame(payload, 0xA))
-                    self.wfile.flush()
-        except Exception:
-            pass
-        with _Handler._ws_lock:
-            if self in _Handler._ws_clients:
-                _Handler._ws_clients.remove(self)
-
-    def _broadcast(self, data: dict):
-        msg = _encode_ws_frame(json.dumps(data).encode())
-        with _Handler._ws_lock:
-            clients = list(_Handler._ws_clients)
-        for client in clients:
-            try:
-                client.wfile.write(msg)
-                client.wfile.flush()
+                data = await request.json()
+                message = data.get("message")
+                system = data.get("system", "")
             except Exception:
-                pass
+                return web.json_response({"error": "invalid JSON body"}, status=400)
+        
+        if not message:
+            return web.json_response({"error": "missing message"}, status=400)
+        
+        result = await self._run_agent(message, system=system)
+        if result:
+            return web.json_response({"response": result})
+        return web.json_response({"error": "no output"}, status=500)
 
-    async def _stream_agent(self, message: str, system: str = ""):
+    async def _handle_history(self, request: Request) -> Response:
+        msgs = self.agent.messages
+        recent = [{"role": m.get("role"), "content": m.get("content", "")[:300]} for m in msgs[-20:]] if msgs else []
+        return web.json_response({"messages": recent, "count": len(msgs)})
+
+    async def _handle_ingest(self, request: Request) -> Response:
+        if not self._authorized(request):
+            return web.json_response({"error": "unauthorized: missing or invalid bridge token"}, status=401)
+        
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        
+        fact = data.get("fact", "")
+        tags = data.get("tags", [])
+        if not fact:
+            return web.json_response({"error": "missing fact"}, status=400)
+        
+        mem = getattr(self.agent, "memory", None)
+        if mem:
+            mem.add_fact(fact, source="emma")
+        return web.json_response({"ok": True, "fact": fact})
+
+    async def _handle_delegate(self, request: Request) -> Response:
+        """Handle delegation requests from Emma with WebSocket streaming support."""
+        if not self._authorized(request):
+            return web.json_response({"error": "unauthorized: missing or invalid bridge token"}, status=401)
+        
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+        
+        delegation_id = data.get("delegation_id", "")
+        task_type = data.get("task_type", "code")
+        task = data.get("task", "")
+        context = data.get("context", {})
+        constraints = data.get("constraints", {})
+        
+        if not task:
+            return web.json_response({"error": "missing task"}, status=400)
+        
+        # Check if client wants WebSocket streaming
+        wants_ws = data.get("stream", False)
+        
+        # Metrics
+        self._metrics.increment(MetricNames.DELEGATION_STARTED, labels={"type": task_type})
+        
+        with trace_span("luna", "delegate", tags={"delegation_id": delegation_id, "task_type": task_type}) as span:
+            span.set_tag("delegation_id", delegation_id)
+            span.set_tag("task_type", task_type)
+            
+            if wants_ws:
+                # For streaming, we upgrade to WebSocket and handle there
+                self._metrics.increment(MetricNames.DELEGATION_COMPLETED, labels={"type": task_type, "mode": "ws"})
+                return web.json_response({
+                    "delegation_id": delegation_id,
+                    "status": "accepted",
+                    "message": "Connect to /ws with same delegation_id for streaming"
+                })
+            
+            # Non-streaming: run agent and return result
+            system_context = self._build_delegation_context(context, task_type)
+            
+            with self._metrics.timer(MetricNames.DELEGATION_DURATION, labels={"type": task_type}):
+                result = await self._run_agent(task, system=system_context)
+            
+            summary = self._extract_summary(result) if result else ""
+            status = "completed" if result else "failed"
+            self._metrics.increment(MetricNames.DELEGATION_COMPLETED if result else MetricNames.DELEGATION_FAILED, 
+                                   labels={"type": task_type})
+            
+            return web.json_response({
+                "delegation_id": delegation_id,
+                "status": status,
+                "summary": summary,
+                "files_changed": [],
+                "tests_run": 0,
+                "tests_passed": 0,
+                "next_steps": [],
+                "artifacts": {}
+            })
+
+    def _build_delegation_context(self, context: dict, task_type: str) -> str:
+        """Build system prompt context for delegated task."""
+        parts = []
+        
+        parts.append(f"[DELEGATED TASK — {task_type.upper()}]")
+        parts.append("You are Luna, a coding specialist. Emma has delegated this task to you.")
+        parts.append("Work in the existing REPL session context. Use your tools to complete the task.")
+        parts.append("")
+        
+        if context.get("project_path"):
+            parts.append(f"Project: {context['project_path']}")
+        if context.get("relevant_files"):
+            parts.append(f"Relevant files: {', '.join(context['relevant_files'])}")
+        if context.get("git_branch"):
+            parts.append(f"Git branch: {context['git_branch']}")
+        if context.get("recent_changes"):
+            parts.append(f"Recent changes: {context['recent_changes']}")
+        
+        parts.append("")
+        parts.append("Constraints:")
+        if context.get("max_duration_seconds"):
+            parts.append(f"- Max duration: {context['max_duration_seconds']}s")
+        if context.get("require_tests"):
+            parts.append("- Write/run tests for changes")
+        
+        return "\n".join(parts)
+
+    def _extract_summary(self, response: str | None) -> str:
+        """Extract a brief summary from agent response."""
+        if not response:
+            return "No response from agent"
+        lines = [l.strip() for l in response.split("\n") if l.strip()]
+        if not lines:
+            return "Task completed"
+        for line in lines:
+            if len(line) > 20:
+                return line[:200]
+        return lines[0][:200]
+
+    async def _handle_ws(self, request: Request) -> web.WebSocketResponse:
+        if not self._authorized(request):
+            return web.json_response({"error": "unauthorized: missing or invalid bridge token"}, status=401)
+        
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        
+        async with self._ws_lock:
+            self._ws_clients.add(ws)
+        
+        try:
+            # Send initial status
+            await ws.send_json({
+                "type": "status",
+                "provider": self.agent._get_provider_name(),
+                "mode": self.agent.config.mode.value,
+            })
+            
+            async for msg in ws:
+                if msg.type == web.WSMsgType.TEXT:
+                    try:
+                        data = json.loads(msg.data)
+                        msg_type = data.get("type")
+                        if msg_type == "chat":
+                            await self._stream_agent_ws(ws, data["message"])
+                        elif msg_type == "delegate":
+                            # Handle delegated task streaming
+                            print(f"DEBUG: Received delegate message, calling _stream_delegation_ws")
+                            await self._stream_delegation_ws(ws, data)
+                            print(f"DEBUG: _stream_delegation_ws returned")
+                    except json.JSONDecodeError:
+                        print("DEBUG: JSON decode error")
+                        pass
+                elif msg.type == web.WSMsgType.ERROR:
+                    print(f"DEBUG: WebSocket error: {ws.exception()}")
+                    break
+                elif msg.type == web.WSMsgType.CLOSE:
+                    print(f"DEBUG: WebSocket close received")
+                    break
+        except Exception as e:
+            print(f"DEBUG: Exception in _handle_ws: {e}")
+            traceback.print_exc()
+        finally:
+            async with self._ws_lock:
+                self._ws_clients.discard(ws)
+        
+        return ws
+
+    async def _stream_delegation_ws(self, ws: web.WebSocketResponse, data: dict):
+        """Stream a delegated task with tool events."""
         from core.providers.base import TextChunk, ToolExecStart, ToolExecEnd
-        if system:
-            _Handler.agent._emma_context = system
+        
+        delegation_id = data.get("delegation_id", "")
+        task_type = data.get("task_type", "code")
+        task = data.get("task", "")
+        context = data.get("context", {})
+        constraints = data.get("constraints", {})
+        
+        if not task:
+            await ws.send_json({"type": "error", "delegation_id": delegation_id, "message": "missing task"})
+            return
+        
+        # Metrics
+        self._metrics.increment(MetricNames.DELEGATION_STARTED, labels={"type": task_type, "mode": "ws"})
+        
+        with trace_span("luna", "delegate_stream", tags={"delegation_id": delegation_id, "task_type": task_type}) as span:
+            span.set_tag("delegation_id", delegation_id)
+            span.set_tag("task_type", task_type)
+            
+            # Build system context for delegation
+            system_context = self._build_delegation_context(context, task_type)
+            
+            # Send started event
+            await ws.send_json({
+                "type": "delegation_started",
+                "delegation_id": delegation_id,
+                "task_type": task_type
+            })
+            
+            try:
+                files_changed = set()
+                tests_run = 0
+                tests_passed = 0
+                
+                # Set emma_context for delegation
+                self.agent._emma_context = system_context
+                
+                with self._metrics.timer(MetricNames.DELEGATION_DURATION, labels={"type": task_type, "mode": "ws"}):
+                    async for event in self.agent.run(task):
+                        if isinstance(event, TextChunk):
+                            await ws.send_json({
+                                "type": "chunk",
+                                "delegation_id": delegation_id,
+                                "text": event.text
+                            })
+                        elif isinstance(event, ToolExecStart):
+                            # Track file changes from tool calls
+                            tool_name = event.name
+                            args = event.arguments
+                            await ws.send_json({
+                                "type": "tool_start",
+                                "delegation_id": delegation_id,
+                                "tool": tool_name,
+                                "args": args
+                            })
+                            # Metrics
+                            self._metrics.increment(MetricNames.TOOL_EXECUTIONS, labels={"tool": tool_name})
+                            
+                            with self._metrics.timer(MetricNames.TOOL_DURATION, labels={"tool": tool_name}):
+                                pass  # Timing will be captured on ToolExecEnd
+                            
+                            # Track files from write/edit tools
+                            if tool_name in ("write", "edit") and "path" in args:
+                                files_changed.add(args["path"])
+                        elif isinstance(event, ToolExecEnd):
+                            result = event.result
+                            await ws.send_json({
+                                "type": "tool_end",
+                                "delegation_id": delegation_id,
+                                "tool": event.name,
+                                "result_preview": str(result)[:200] if result else ""
+                            })
+                            # Track test results
+                            if event.name in ("bash", "test") and "test" in str(result).lower():
+                                tests_run += 1
+                                if "passed" in str(result).lower() or "ok" in str(result).lower():
+                                    tests_passed += 1
+                        elif isinstance(event, str):
+                            # Final text response
+                            await ws.send_json({
+                                "type": "chunk",
+                                "delegation_id": delegation_id,
+                                "text": event
+                            })
+                
+                # Send completion
+                summary = self._extract_summary(event) if isinstance(event, str) else "Task completed"
+                await ws.send_json({
+                    "type": "delegation_completed",
+                    "delegation_id": delegation_id,
+                    "status": "completed",
+                    "summary": summary,
+                    "files_changed": list(files_changed),
+                    "tests_run": tests_run,
+                    "tests_passed": tests_passed,
+                    "next_steps": [],
+                    "artifacts": {}
+                })
+            except Exception as e:
+                self._metrics.increment(MetricNames.DELEGATION_FAILED, labels={"type": task_type, "mode": "ws"})
+                span.set_error(e)
+                await ws.send_json({
+                    "type": "delegation_failed",
+                    "delegation_id": delegation_id,
+                    "status": "failed",
+                    "error": str(e)
+                })
+
+    async def _stream_agent_ws(self, ws: web.WebSocketResponse, message: str):
+        from core.providers.base import TextChunk
         full = ""
-        async for event in _Handler.agent.run(message):
+        async for event in self.agent.run(message):
             if isinstance(event, TextChunk):
                 full += event.text
-                self._broadcast({"type": "chunk", "text": event.text})
+                await ws.send_json({"type": "chunk", "text": event.text})
             elif isinstance(event, str):
                 full = event
-                self._broadcast({"type": "chunk", "text": event})
-        self._broadcast({"type": "done", "count": len(_Handler.agent.messages) // 2})
+                await ws.send_json({"type": "chunk", "text": event})
+        await ws.send_json({"type": "done", "count": len(self.agent.messages) // 2})
 
     async def _run_agent(self, message: str, system: str = "") -> str | None:
-        from core.providers.base import TextChunk, ToolExecStart, ToolExecEnd
+        from core.providers.base import TextChunk
         if system:
-            _Handler.agent._emma_context = system
+            self.agent._emma_context = system
         full = ""
-        async for event in _Handler.agent.run(message):
+        async for event in self.agent.run(message):
             if isinstance(event, TextChunk):
                 full += event.text
             elif isinstance(event, str):
                 full = event
         return full if full else None
 
+    async def _broadcast(self, data: dict):
+        msg = json.dumps(data)
+        async with self._ws_lock:
+            clients = list(self._ws_clients)
+        for client in clients:
+            try:
+                await client.send_str(msg)
+            except Exception:
+                pass
 
-def start_server(agent: Agent, host: str = "127.0.0.1", port: int = 8701, bridge_token: str = ""):
-    _Handler.agent = agent
-    _Handler.bridge_token = bridge_token
+    @asynccontextmanager
+    async def _lifespan(self, app: web.Application):
+        # Startup
+        yield
+        # Shutdown
+        async with self._ws_lock:
+            for ws in self._ws_clients:
+                await ws.close()
+            self._ws_clients.clear()
 
-    if host not in ("127.0.0.1", "localhost", "::1"):
-        print(
-            f"⚠  WARNING: binding to {host} exposes Luna beyond this machine. "
-            "Make sure a bridge token is set (EMMA_API_KEY in .env) and that "
-            "this port is firewalled from anything but Emma."
-        )
-    if not bridge_token:
-        print(
-            "⚠  WARNING: no bridge token configured (EMMA_API_KEY is empty). "
-            "/api/chat and /api/ingest are DISABLED until you set one — "
-            "Luna will not accept commands or 'Emma' context from anyone "
-            "without it. Set EMMA_API_KEY in .env on both Luna and Emma to "
-            "the same shared secret to enable the bridge."
-        )
+    def create_app(self) -> web.Application:
+        app = web.Application()
+        app.cleanup_ctx.append(self._lifespan)
+        
+        # Routes
+        app.router.add_get("/", self._handle_index)
+        app.router.add_get("/health", self._handle_health)
+        app.router.add_get("/status", self._handle_status)
+        app.router.add_get("/api/chat", self._handle_api_chat)
+        app.router.add_post("/api/chat", self._handle_api_chat)
+        app.router.add_get("/history", self._handle_history)
+        app.router.add_post("/api/ingest", self._handle_ingest)
+        app.router.add_post("/api/delegate", self._handle_delegate)
+        app.router.add_get("/ws", self._handle_ws)
+        
+        self._app = app
+        return app
 
-    server = _ThreadingHTTPServer((host, port), _Handler)
-    print(f"Luna server listening on http://{host}:{port}")
+    async def start(self, host: str = "127.0.0.1", port: int = 8701):
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            print(
+                f"⚠  WARNING: binding to {host} exposes Luna beyond this machine. "
+                "Make sure a bridge token is set (EMMA_API_KEY in .env) and that "
+                "this port is firewalled from anything but Emma."
+            )
+        if not self.bridge_token:
+            print(
+                "⚠  WARNING: no bridge token configured (EMMA_API_KEY is empty). "
+                "/api/chat and /api/ingest are DISABLED until you set one — "
+                "Luna will not accept commands or 'Emma' context from anyone "
+                "without it. Set EMMA_API_KEY in .env on both Luna and Emma to "
+                "the same shared secret to enable the bridge."
+            )
+
+        app = self.create_app()
+        self._runner = web.AppRunner(app)
+        await self._runner.setup()
+        self._site = web.TCPSite(self._runner, host, port)
+        await self._site.start()
+        print(f"Luna server listening on http://{host}:{port}")
+
+    async def stop(self):
+        if self._site:
+            await self._site.stop()
+        if self._runner:
+            await self._runner.cleanup()
+
+
+async def start_server(agent: 'AgentCore', host: str = "127.0.0.1", port: int = 8701, bridge_token: str = ""):
+    """Start the bridge server (async, non-blocking)."""
+    server = BridgeServer(agent, bridge_token)
+    await server.start(host, port)
+    # Keep running until cancelled
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nshutting down")
-        server.server_close()
+        await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await server.stop()

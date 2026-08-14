@@ -1,103 +1,53 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import Optional
+
+
+DEFAULT_LUNA_PERSONA = """You are Luna, a coding specialist AI. You are technical, precise, and direct. You don't do small talk or pleasantries — you write, edit, debug, and refactor code.
+
+## Operating Principles
+
+1. **Code first** — Your primary output is working code. Explanations support the code, not replace it.
+2. **Precision over verbosity** — One accurate sentence beats three vague ones. Technical terms are precise.
+3. **Context awareness** — You maintain the REPL session context. You know the project structure, recent changes, git state. Use it.
+4. **Tool fluency** — You use tools (bash, write, edit, grep, glob, read) fluidly. You don't describe what you'll do — you do it.
+5. **Test-driven when appropriate** — When fixing bugs or adding features, you write tests. You run them. You verify they pass.
+6. **Git hygiene** — You understand git. You make atomic commits. You write meaningful messages.
+
+## Communication Style
+
+- Concise, technical
+- Code blocks for code
+- Inline for brief explanations
+- Never apologize for being direct
+- No filler ("I'll help you with that", "Let me...")
+
+## Boundaries
+
+- You are not a chatbot. You don't do general conversation.
+- You don't manage schedules, tasks, or reminders.
+- You don't do voice interaction.
+- You are the coding specialist. Emma is the orchestrator. You trust her delegation; she trusts your execution."""
 
 
 class PersonaLoader:
-    def __init__(self, *search_dirs: str | Path):
-        self.search_dirs = [Path(d).expanduser().resolve() for d in search_dirs]
-        self._cached_prompt: str | None = None
-        self._dirty = True
-
-    def _resolve(self, *parts: str) -> Path | None:
-        for d in self.search_dirs:
-            p = d.joinpath(*parts)
-            if p.exists() and p.is_file():
-                return p
-        return None
-
-    def _resolve_dir(self, *parts: str) -> Path | None:
-        for d in self.search_dirs:
-            p = d.joinpath(*parts)
-            if p.exists() and p.is_dir():
-                return p
-        return None
-
-    def _read(self, *parts: str) -> str:
-        p = self._resolve(*parts)
-        if p is None:
-            return ""
-        try:
-            return p.read_text(encoding="utf-8").strip()
-        except Exception:
-            return ""
-
-    def reload(self):
-        self._dirty = True
-
-    def _load_rules(self) -> str:
-        rules_dir = self._resolve_dir("rules")
-        if rules_dir is None:
-            return ""
-        parts: list[str] = []
-        for f in sorted(rules_dir.iterdir()):
-            if f.suffix == ".md" and f.is_file():
-                try:
-                    text = f.read_text(encoding="utf-8").strip()
-                    if text:
-                        name = f.stem.replace("_", " ").replace("-", " ").title()
-                        parts.append(f"### {name}\n{text}")
-                except Exception:
-                    pass
-        return "\n\n".join(parts)
-
+    """Load and build system prompts for personas."""
+    
+    def __init__(self, persona_text: str | None = None, persona_dir: str | None = None):
+        self._persona_text = persona_text
+        self._persona_dir = persona_dir
+    
     def build_system_prompt(self) -> str:
-        if self._cached_prompt is not None and not self._dirty:
-            return self._cached_prompt
-        self._dirty = False
+        if self._persona_text:
+            return self._persona_text
+        return load_luna_persona(self._persona_dir)
 
-        core = self._read("core.md")
-        workflow = self._read("workflow.md")
-        user = self._read("user.md")
-        rules = self._load_rules()
 
-        sections: list[str] = []
-        if core:
-            sections.append(core)
-        if workflow:
-            sections.append(f"## Workflow\n{workflow}")
-        if rules:
-            sections.append(f"## Project Rules\n{rules}")
-        if user:
-            sections.append(f"## About the User\n{user}")
-
-        self._cached_prompt = "\n\n".join(sections)
-        return self._cached_prompt
-
-    def status(self) -> dict:
-        loaded = []
-        missing = []
-        for name in ("core.md", "workflow.md", "user.md"):
-            p = self._resolve(name)
-            if p:
-                loaded.append(name)
-            else:
-                missing.append(name)
-        rules_dir = self._resolve_dir("rules")
-        if rules_dir:
-            loaded.append(f"rules/ ({len(list(rules_dir.glob('*.md')))} files)")
-        else:
-            missing.append("rules/")
-        return {"loaded": loaded, "missing": missing, "has_prompt": self._cached_prompt is not None}
-
-    def get_persona_name(self) -> str:
-        core = self._read("core.md")
-        for line in core.split("\n"):
-            line = line.strip()
-            if line.startswith("name:"):
-                return line.split(":", 1)[1].strip().strip('"').strip("'")
-            if line.startswith("## ") and "Luna" in line:
-                return "Luna"
-            if "Luna" in line:
-                return "Luna"
-        return "Luna"
+def load_luna_persona(persona_dir: str | None = None) -> str:
+    """Load Luna's system prompt from file or use default."""
+    if persona_dir:
+        persona_path = Path(persona_dir) / "luna.md"
+        if persona_path.exists():
+            return persona_path.read_text()
+    
+    # Fallback to default
+    return DEFAULT_LUNA_PERSONA

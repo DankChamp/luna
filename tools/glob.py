@@ -1,16 +1,26 @@
 from __future__ import annotations
 from pathlib import Path
 
+from core.paths import validate_path_within_workspace, _get_workspace_root
 from .registry import ToolDef
 
 
 async def glob_files(pattern: str, path: str | None = None) -> str:
-    search_dir = Path(path).expanduser().resolve() if path else Path.cwd()
+    try:
+        if path:
+            search_dir = validate_path_within_workspace(path)
+            if not search_dir.is_dir():
+                return f"Error: not a directory: {path}"
+        else:
+            search_dir = _get_workspace_root()
+    except ValueError as e:
+        return f"Error: {e}"
     if not search_dir.exists():
         return f"Error: directory not found: {path}"
 
     try:
-        matches = [str(p) for p in search_dir.rglob(pattern)]
+        # Don't follow symlinks to prevent escaping workspace
+        matches = [str(p) for p in search_dir.rglob(pattern) if not p.is_symlink()]
     except Exception as e:
         return f"Error globbing: {e}"
 
@@ -21,7 +31,7 @@ async def glob_files(pattern: str, path: str | None = None) -> str:
 
 glob_tool = ToolDef(
     name="glob",
-    description="Search for files matching a glob pattern. Supports **/*.py, *.txt, src/**/*.ts",
+    description="Search for files matching a glob pattern. Supports **/*.py, *.txt, src/**/*.ts. Path must be within workspace.",
     parameters={
         "pattern": {
             "type": "string",
@@ -29,7 +39,7 @@ glob_tool = ToolDef(
         },
         "path": {
             "type": "string",
-            "description": "Directory to search in (defaults to current directory)",
+            "description": "Directory to search in (defaults to workspace root)",
         },
     },
     required=["pattern"],
