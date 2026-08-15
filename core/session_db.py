@@ -21,7 +21,6 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import DeclarativeBase, relationship
 
 from core.config_manager import ConfigManager
-from core.paths import data_home
 from core.errors import SessionError, ConfigMigrationError
 
 
@@ -93,7 +92,7 @@ class SessionDatabase:
     """SQLite-backed session storage with auto-migration from JSON."""
 
     def __init__(self, db_path: Path | None = None):
-        self.db_path = db_path or data_home() / "sessions.db"
+        self.db_path = db_path or Path("~/.luna/sessions/sessions.db").expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.engine = None
         self.session_factory = None
@@ -117,7 +116,7 @@ class SessionDatabase:
 
     async def _maybe_migrate_json_sessions(self) -> None:
         """Migrate old JSON session files to SQLite."""
-        json_dir = data_home() / "sessions"
+        json_dir = self.db_path.parent
         if not json_dir.exists():
             return
 
@@ -125,10 +124,23 @@ class SessionDatabase:
         if not json_files:
             return
 
-        print(f"Migrating {len(json_files)} JSON sessions to SQLite...")
-
+        # Skip sessions that were already migrated
+        pending = []
         async with self.session_factory() as session:
             for json_file in json_files:
+                data = json.loads(json_file.read_text())
+                session_id = data.get("id", json_file.stem)
+                existing = await session.get(SessionModel, session_id)
+                if not existing:
+                    pending.append(json_file)
+
+        if not pending:
+            return
+
+        print(f"Migrating {len(pending)} JSON sessions to SQLite...")
+
+        async with self.session_factory() as session:
+            for json_file in pending:
                 try:
                     await self._migrate_json_session(session, json_file)
                 except Exception as e:
@@ -143,8 +155,24 @@ class SessionDatabase:
         data = json.loads(json_file.read_text())
 
         session_id = data.get("id", json_file.stem)
-        created_at = datetime.fromisoformat(data.get("created", datetime.now(timezone.utc).isoformat()))
-        updated_at = datetime.fromisoformat(data.get("updated", datetime.now(timezone.utc).isoformat()))
+
+        # Skip if this session was already migrated (idempotent)
+        existing = await db_session.get(SessionModel, session_id)
+        if existing:
+            return
+
+        def _parse_dt(value, default=None):
+            if isinstance(value, str):
+                try:
+                    return datetime.fromisoformat(value)
+                except ValueError:
+                    pass
+            elif isinstance(value, (int, float)):
+                return datetime.fromtimestamp(value, tz=timezone.utc)
+            return default or datetime.now(timezone.utc)
+
+        created_at = _parse_dt(data.get("created"))
+        updated_at = _parse_dt(data.get("updated"), created_at)
 
         project = data.get("project", {})
         project_path = project.get("path")

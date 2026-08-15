@@ -29,7 +29,9 @@ class SessionManager:
     async def _get_db(self) -> SessionDatabase:
         """Get or create database instance."""
         if self._db is None:
-            self._db = await get_session_database(self._db_path)
+            self._db = await get_session_database(
+                self._db_path or (self.session_dir / "sessions.db")
+            )
         return self._db
 
     @property

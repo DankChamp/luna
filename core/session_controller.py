@@ -62,7 +62,7 @@ class SessionController:
     
     async def flush(self):
         """Force save if dirty."""
-        if self._dirty and self._current_session_id:
+        if self._dirty:
             await self._save_current()
     
     async def _auto_save_loop(self):
@@ -74,19 +74,20 @@ class SessionController:
     
     async def _save_current(self) -> str | None:
         """Save current session."""
-        if not self._current_session_id:
+        if not self._dirty:
             return None
-        
-        session_id = self.session_mgr.save(
+
+        session_id = await self.session_mgr.save(
             self.agent_core.messages,
             debounce=False  # We're explicitly flushing
         )
+        self._current_session_id = session_id
         self._dirty = False
         return session_id
     
     async def load_session(self, session_id: str) -> bool:
         """Load a session by ID."""
-        data = self.session_mgr.load(session_id)
+        data = await self.session_mgr.load(session_id)
         if not data:
             return False
         
@@ -124,7 +125,7 @@ class SessionController:
     
     async def delete_session(self, session_id: str) -> bool:
         """Delete a session."""
-        result = self.session_mgr.delete(session_id)
+        result = await self.session_mgr.delete(session_id)
         if result and self._current_session_id == session_id:
             self._current_session_id = None
             self.agent_core.reset()
@@ -133,9 +134,9 @@ class SessionController:
                 await self.on_session_change(None)
         return result
     
-    def list_sessions(self) -> list[dict]:
+    async def list_sessions(self) -> list[dict]:
         """List all sessions."""
-        return self.session_mgr.list_sessions()
+        return await self.session_mgr.list_sessions()
     
     @property
     def current_session_id(self) -> str | None:

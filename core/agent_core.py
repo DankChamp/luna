@@ -171,6 +171,13 @@ class AgentCore:
     def set_system_prompt(self, prompt: str):
         """Update the base system prompt."""
         self.config.system_prompt = prompt
+
+    async def set_provider(self, provider: str | None = None, model: str | None = None):
+        """Switch active provider and/or model."""
+        if provider:
+            await self.router.set_active(provider)
+        if model:
+            await self.router.switch_model(None, model)
     
     def set_emma_context(self, context: str):
         """Set Emma's delegation context."""

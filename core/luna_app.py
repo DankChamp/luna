@@ -152,18 +152,30 @@ class LunaApp:
             self._sidebar_cache["sid"] = sid
             self._sidebar_cache["tokens"] = tokens
             if sid:
-                sess = self.session_mgr.load(sid)
-                if sess:
-                    self._sidebar_cache["branch"] = sess.get("project", {}).get("branch", "") or ""
+                # DB access is async; fetch the branch in the background
+                if self._sidebar_cache.get("branch") == "" and self._app:
+                    self._app.create_background_task(self._cache_session_branch(sid))
+                branch = self._sidebar_cache.get("branch", "") or ""
             else:
                 self._sidebar_cache["branch"] = ""
-        
-        branch = self._sidebar_cache["branch"]
+                branch = ""
+
         return build_sidebar_text(project, sid, tokens, limit, todos, branch)
     
     def _sep_vert_style(self) -> str:
         info = self.MODE_INDICATORS.get(self.agent_core.config.mode, self.MODE_INDICATORS[self.AgentMode.BUILD])
         return f"fg:{info['color']} bg:#0d0d1a"
+
+    async def _cache_session_branch(self, sid: str):
+        """Fetch a session's git branch in the background for the sidebar."""
+        try:
+            sess = await self.session_mgr.load(sid)
+            if sess:
+                self._sidebar_cache["branch"] = sess.get("project", {}).get("branch", "") or ""
+                if self._app:
+                    self._app.invalidate()
+        except Exception:
+            pass
     
     def _build_layout(self):
         """Build the prompt-toolkit layout."""
@@ -481,7 +493,10 @@ class LunaApp:
             buf.append(("", "\n"))
         
         # Flush session save
-        self.session_mgr.flush(self.agent_core.messages)
+        try:
+            await self.session_mgr.flush(self.agent_core.messages)
+        except Exception:
+            pass
         
         # Auto-suggest skills
         if self.skills:
@@ -607,7 +622,7 @@ class LunaApp:
         subargs = parts[1] if len(parts) > 1 else ""
         
         if subcmd in ("list", "ls"):
-            sessions = self.session_mgr.list_sessions()
+            sessions = await self.session_mgr.list_sessions()
             if not sessions:
                 self._output_buffer.append((Neon.dim, "\nNo sessions found\n"))
             else:
@@ -635,15 +650,18 @@ class LunaApp:
             if not subargs:
                 self._output_buffer.append((Neon.error, "\nUsage: /session delete <id>\n"))
                 return
-            ok = self.session_mgr.delete(subargs)
+            ok = await self.session_mgr.delete(subargs)
             if ok:
                 self._output_buffer.append((Neon.ok, f"\nDeleted session: {subargs}\n"))
             else:
                 self._output_buffer.append((Neon.error, f"\nFailed to delete: {subargs}\n"))
         
         elif subcmd in ("save", "s"):
-            sid = self.session_mgr.save(self.agent_core.messages, debounce=False)
-            self._output_buffer.append((Neon.ok, f"\nSession saved: {sid}\n"))
+            try:
+                sid = await self.session_mgr.save(self.agent_core.messages, debounce=False)
+                self._output_buffer.append((Neon.ok, f"\nSession saved: {sid}\n"))
+            except Exception as e:
+                self._output_buffer.append((Neon.error, f"\nFailed to save session: {e}\n"))
         
         else:
             self._output_buffer.append((Neon.error, f"\nUnknown session command: {subcmd}\n"))

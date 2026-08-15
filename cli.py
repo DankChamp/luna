@@ -362,14 +362,15 @@ class LunaCLI:
         """Manage sessions."""
         db = await get_session_database()
 
-        if not args:
+        action = args[0] if args else "list"
+        if action in ("list", "ls"):
             sessions = await db.list_sessions()
             for s in sessions:
                 current = " * " if s.id == self.session_controller.current_session_id else "   "
-                print(f"{current}{s.id[:8]} {s.updated_at[:19]} {s.message_count} msgs")
+                updated = s.updated_at.isoformat()[:19] if hasattr(s.updated_at, "isoformat") else str(s.updated_at)[:19]
+                print(f"{current}{s.id[:8]} {updated} {s.message_count} msgs")
             return 0
 
-        action = args[0]
         if action == "new":
             await self.session_controller.new_session()
             print("New session created")

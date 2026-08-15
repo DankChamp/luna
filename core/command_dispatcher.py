@@ -256,7 +256,7 @@ class CommandDispatcher:
     async def _cmd_session(self, args: str):
         args = args.strip()
         if not args:
-            sessions = self.session_controller.list_sessions()
+            sessions = await self.session_controller.list_sessions()
             if sessions:
                 self.output_buffer.append((f"fg:#6b7280", "\nSessions:\n"))
                 for s in sessions[:10]:
@@ -282,7 +282,7 @@ class CommandDispatcher:
         
         elif subcmd == "delete" and len(parts) > 1:
             session_id = parts[1]
-            if self.session_controller.delete(session_id):
+            if await self.session_controller.delete_session(session_id):
                 self.output_buffer.append((f"fg:#22c55e", f"\nDeleted session {session_id[:8]}\n"))
             else:
                 self.output_buffer.append((f"fg:#f43f5e", f"\nSession not found: {session_id}\n"))
