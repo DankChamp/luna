@@ -345,21 +345,14 @@ class BridgeServer:
                         if msg_type == "chat":
                             await self._stream_agent_ws(ws, data["message"])
                         elif msg_type == "delegate":
-                            # Handle delegated task streaming
-                            print(f"DEBUG: Received delegate message, calling _stream_delegation_ws")
                             await self._stream_delegation_ws(ws, data)
-                            print(f"DEBUG: _stream_delegation_ws returned")
                     except json.JSONDecodeError:
-                        print("DEBUG: JSON decode error")
                         pass
                 elif msg.type == web.WSMsgType.ERROR:
-                    print(f"DEBUG: WebSocket error: {ws.exception()}")
                     break
                 elif msg.type == web.WSMsgType.CLOSE:
-                    print(f"DEBUG: WebSocket close received")
                     break
         except Exception as e:
-            print(f"DEBUG: Exception in _handle_ws: {e}")
             traceback.print_exc()
         finally:
             async with self._ws_lock:
@@ -448,14 +441,15 @@ class BridgeServer:
                                     tests_passed += 1
                         elif isinstance(event, str):
                             # Final text response
+                            last_text = event
                             await ws.send_json({
                                 "type": "chunk",
                                 "delegation_id": delegation_id,
                                 "text": event
                             })
-                
-                # Send completion
-                summary = self._extract_summary(event) if isinstance(event, str) else "Task completed"
+                    
+                    # Send completion
+                    summary = self._extract_summary(last_text) if 'last_text' in locals() and last_text else "Task completed"
                 await ws.send_json({
                     "type": "delegation_completed",
                     "delegation_id": delegation_id,

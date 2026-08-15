@@ -23,11 +23,11 @@ async def write_file(path: str, content: str) -> str:
 
 write_tool = ToolDef(
     name="write",
-    description="Write content to a file, creating directories if needed. Overwrites existing content. Path must be within workspace.",
+    description="Write content to a FILE (not a directory). Creates parent directories if needed. Overwrites existing content. Path must be within workspace.",
     parameters={
         "path": {
             "type": "string",
-            "description": "Path to the file to write (relative to workspace root)",
+            "description": "Path to the FILE to write (relative to workspace root)",
         },
         "content": {
             "type": "string",

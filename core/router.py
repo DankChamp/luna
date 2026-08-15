@@ -1,127 +1,77 @@
 from __future__ import annotations
 
-from .providers.base import AIProvider
-from .providers.nvidia_nim import NvidiaNIMProvider
-from .providers.local import LocalProvider
-from .config_manager import ConfigManager, ProviderDef
-
-
-PROVIDER_BUILDERS = {
-    "nvidia": lambda d: NvidiaNIMProvider(api_key=d.api_key, base_url=d.base_url, model=d.model),
-    "local": lambda d: LocalProvider(base_url=d.base_url, api_key=d.api_key, model=d.model),
-}
+from core.providers.base import AIProvider
+from core.providers.manager import ProviderManager
+from core.config_manager import ConfigManager, ProviderDef
 
 
 class AIRouter:
     def __init__(self, config: ConfigManager):
         self.config = config
-        self._providers: dict[str, AIProvider] = {}
-        self._active: str | None = None
-        self._model_cache: dict[str, list[str]] | None = None
-        self._model_index: int = 0
-        self._sync()
-
-    def _sync(self):
-        for name, defn in self.config.get_all_providers().items():
-            if name not in self._providers:
-                self._providers[name] = self._build(defn)
-        self._active = self.config.active
-
-    def _build(self, defn: ProviderDef) -> AIProvider:
-        builder = PROVIDER_BUILDERS.get(defn.type)
-        if not builder:
-            raise ValueError(f"Unknown provider type: {defn.type}")
-        return builder(defn)
-
-    def _rebuild(self, name: str):
-        defn = self.config.get_provider(name)
-        if defn:
-            self._providers[name] = self._build(defn)
+        self.provider_manager = ProviderManager(config)
 
     @property
     def active_name(self) -> str:
-        return self._active or ""
+        return self.provider_manager._active_provider or ""
 
     async def get_provider(self, name: str | None = None) -> AIProvider:
-        target = name or self._active
-        if target not in self._providers:
-            self._sync()
-        result = self._providers.get(target)
-        if result:
-            return result
-        result = self._providers.get("nvidia")
-        if result:
-            return result
-        providers = list(self._providers.values())
-        if providers:
-            return providers[0]
-        raise RuntimeError("No providers configured. Check your .env or config.json.")
+        return await self.provider_manager.get_provider(name)
 
-    async def set_active(self, name: str):
-        if name in self._providers:
-            self.config.active = name
-            self._active = name
+    async def set_active(self, name: str) -> None:
+        await self.provider_manager.set_active(name)
 
-    async def reconfigure(self, name: str, **kwargs):
+    async def reconfigure(self, name: str, **kwargs) -> None:
         self.config.update_provider(name, **kwargs)
-        self._rebuild(name)
-        self._model_cache = None
+        # Rebuild provider
+        if name in self.provider_manager._providers:
+            del self.provider_manager._providers[name]
+        await self.provider_manager.get_provider(name)
 
     async def cached_models(self, name: str | None = None) -> list[str]:
-        target = name or self._active
-        cache = self._model_cache or {}
-        if target not in cache:
-            provider = await self.get_provider(target)
-            if hasattr(provider, "list_models"):
-                try:
-                    cache[target] = await provider.list_models()
-                except NotImplementedError:
-                    cache[target] = []
-            else:
-                cache[target] = []
-            self._model_cache = cache
-        return cache.get(target) or []
+        return await self.provider_manager.list_models(name)
 
     def cached_models_sync(self, name: str | None = None) -> list[str]:
-        """Whatever's already cached, with no network call — for use in
-        synchronous contexts like tab-completion."""
-        return (self._model_cache or {}).get(name or self._active) or []
+        provider = self.provider_manager._providers.get(name or self.active_name)
+        if provider and hasattr(provider, '_model_cache') and provider._model_cache:
+            return provider._model_cache
+        return []
 
     def provider_names_sync(self) -> list[str]:
-        return list(self._providers.keys())
+        return self.provider_manager.get_provider_names()
 
     async def cycle_model(self) -> str:
         models = await self.cached_models()
         if not models:
             return ""
-        self._model_index = (self._model_index + 1) % len(models)
-        model = models[self._model_index]
-        await self.reconfigure(self._active, model=model)
+        # Get current index from provider
+        provider = self.provider_manager._providers.get(self.active_name)
+        current_index = getattr(provider, '_model_index', 0)
+        current_index = (current_index + 1) % len(models)
+        if provider:
+            provider._model_index = current_index
+        model = models[current_index]
+        await self.reconfigure(self.active_name, model=model)
         return model
 
     @property
     def active_model(self) -> str:
-        p = self.config.get_provider(self._active or "")
+        p = self.config.get_provider(self.active_name)
         return p.model if p else ""
 
     async def list_providers(self) -> list[dict]:
         return self.config.list_providers_info()
 
     async def list_models(self, name: str) -> list[str]:
-        provider = await self.get_provider(name)
-        if hasattr(provider, "list_models"):
-            try:
-                return await provider.list_models()
-            except NotImplementedError:
-                pass
-        return []
+        return await self.provider_manager.list_models(name)
 
     async def test_connection(self, name: str) -> tuple[bool, str]:
-        provider = await self.get_provider(name)
-        return await provider.test_connection()
+        return await self.provider_manager.test_connection(name)
 
     async def provider_info(self, name: str) -> str:
         p = self.config.get_provider(name)
         if not p:
             return "Unknown"
         return f"{p.type}/{p.model}"
+
+    async def switch_model(self, name: str | None = None, model: str | None = None) -> None:
+        await self.provider_manager.switch_model(name, model)

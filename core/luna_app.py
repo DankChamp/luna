@@ -14,6 +14,8 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application
 from prompt_toolkit.application.current import get_app
 from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.clipboard import ClipboardData
+from prompt_toolkit.clipboard.pyperclip import PyperclipClipboard
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.layout import Layout, HSplit, VSplit, Window, Float, FloatContainer
 from prompt_toolkit.layout.menus import CompletionsMenu
@@ -21,7 +23,7 @@ from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.styles import Style as PTKStyle, DynamicStyle
 from prompt_toolkit.completion import ThreadedCompleter
 from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
-from prompt_toolkit.filters import Condition
+from prompt_toolkit.filters import Condition, has_selection
 from prompt_toolkit.layout.containers import ConditionalContainer
 from prompt_toolkit.widgets import TextArea
 
@@ -53,6 +55,9 @@ class LunaAppConfig:
     session_dir: str = "~/.luna/sessions"
     router: Optional[object] = None
     agent_core: Optional[AgentCore] = None
+    subagents: Optional[object] = None
+    skills: Optional[object] = None
+    memory: Optional[object] = None
 
 
 class LunaApp:
@@ -75,6 +80,9 @@ class LunaApp:
         
         # Command handling
         self.command_loader = config.command_loader
+        self.subagents = config.subagents
+        self.skills = config.skills
+        self.memory = config.memory
         self.AT_MENTION_RE = re.compile(r"@(\w[\w-]*)\s+(.*)")
         self._ansi_re = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
         
@@ -200,7 +208,7 @@ class LunaApp:
         
         # Input area
         completer = ThreadedCompleter(LunaCompleter(
-            subagent_manager=self.config.subagents if hasattr(self.config, 'subagents') else None,
+            subagent_manager=self.subagents,
             commands=self.config.command_loader.list_commands() if self.config.command_loader else [],
             theme_mgr=self.config.theme_mgr,
             ref_mgr=self.config.ref_mgr,
@@ -255,6 +263,23 @@ class LunaApp:
         def _(event):
             event.app.invalidate()
         
+        # Clipboard: Ctrl+Shift+C to copy, Ctrl+Shift+V to paste
+        @kb.add("c-c", filter=has_selection)
+        def _(event):
+            event.app.current_buffer.copy_to_clipboard()
+        
+        @kb.add("c-v")
+        def _(event):
+            event.app.current_buffer.paste_from_clipboard()
+        
+        @kb.add("c-insert")
+        def _(event):
+            event.app.current_buffer.copy_to_clipboard()
+        
+        @kb.add("s-insert")
+        def _(event):
+            event.app.current_buffer.paste_from_clipboard()
+        
         # Sidebar toggle
         @kb.add("f1")
         def _(event):
@@ -297,8 +322,10 @@ class LunaApp:
         mc = info["color"]
         
         style_dict = {
-            "completion-menu.completion": f"bg:{mc} fg:#0d0d1a",
-            "completion-menu.completion.current": f"bg:#ffffff fg:#0d0d1a",
+            "completion-menu.completion": "bg:#1a1a2e fg:#e0e0e0",
+            "completion-menu.completion.current": f"bg:{mc} fg:#0d0d1a",
+            "completion-menu.meta.completion": "fg:#666666",
+            "completion-menu.meta.completion.current": f"fg:{mc}",
             "scrollbar.background": "bg:#1a1a2e",
             "scrollbar.button": f"bg:{mc}",
             "text-area.focused": f"bg:#1a1a2e",
@@ -457,13 +484,13 @@ class LunaApp:
         self.session_mgr.flush(self.agent_core.messages)
         
         # Auto-suggest skills
-        if self.config.skills:
+        if self.skills:
             self._auto_suggest_skill()
         
         # Extract facts
-        if self.config.memory:
-            for fact in self.config.memory.extract_facts(line):
-                self.config.memory.add_fact(fact, source="auto-extract")
+        if self.memory:
+            for fact in self.memory.extract_facts(line):
+                self.memory.add_fact(fact, source="auto-extract")
         
         return full_text if full_text else None
     
@@ -492,6 +519,7 @@ class LunaApp:
             style=style,
             full_screen=True,
             mouse_support=True,
+            clipboard=PyperclipClipboard(),
         )
         
         # Show welcome
@@ -506,37 +534,336 @@ class LunaApp:
         # Run
         await self._app.run_async()
     
-    # Placeholder methods for command handlers
     async def _show_help(self):
         self._output_buffer.append((Neon.dim, "\nAvailable commands:\n"))
-        # ... implementation
+        self._output_buffer.append((Neon.dim, "  /help, /h       - Show this help\n"))
+        self._output_buffer.append((Neon.dim, "  /clear          - Clear conversation history\n"))
+        self._output_buffer.append((Neon.dim, "  /exit           - Exit Luna\n"))
+        self._output_buffer.append((Neon.dim, "  /mode [mode]    - Switch mode (build/plan)\n"))
+        self._output_buffer.append((Neon.dim, "  /model [model]  - Switch model\n"))
+        self._output_buffer.append((Neon.dim, "  /session [cmd]  - Session management\n"))
+        self._output_buffer.append((Neon.dim, "  /skill [cmd]    - Skill management\n"))
+        self._output_buffer.append((Neon.dim, "  /subagent [cmd] - Subagent management\n"))
+        self._output_buffer.append((Neon.dim, "  /reference [cmd]- Reference management\n"))
+        self._output_buffer.append((Neon.dim, "  /provider       - Show provider panel\n"))
+        self._output_buffer.append((Neon.dim, "  /todo [cmd]     - Todo management\n"))
+        self._output_buffer.append((Neon.dim, "  /undo           - Undo last edit\n"))
+        self._output_buffer.append((Neon.dim, "  /redo           - Redo last edit\n"))
+        self._output_buffer.append((Neon.dim, "  /memory [cmd]   - Memory management\n"))
+        if self.config.command_loader:
+            custom = self.config.command_loader.list_commands()
+            if custom:
+                self._output_buffer.append((Neon.dim, "\nCustom commands:\n"))
+                for c in custom:
+                    self._output_buffer.append((Neon.dim, f"  /{c.name} - {c.description[:60]}\n"))
+        self._output_buffer.append(("", "\n"))
+        if self._app:
+            self._app.invalidate()
     
     async def _handle_mode_command(self, args: str):
-        pass  # Implementation needed
+        from core.modes import AgentMode
+        if not args:
+            self._output_buffer.append((Neon.dim, f"\nCurrent mode: {self.agent_core.config.mode.value}\n"))
+            self._output_buffer.append((Neon.dim, "Usage: /mode [build|plan]\n"))
+            return
+        try:
+            mode = AgentMode(args.lower())
+            self.agent_core.set_mode(mode)
+            self._output_buffer.append((Neon.ok, f"\nMode switched to: {mode.value}\n"))
+        except ValueError:
+            self._output_buffer.append((Neon.error, f"\nInvalid mode: {args}. Use 'build' or 'plan'\n"))
+        if self._app:
+            self._app.invalidate()
     
     async def _handle_model_command(self, args: str):
-        pass  # Implementation needed
+        if not args:
+            current = self.agent_core.router.active_model
+            self._output_buffer.append((Neon.dim, f"\nCurrent model: {current or 'default'}\n"))
+            models = await self.agent_core.router.cached_models()
+            if models:
+                self._output_buffer.append((Neon.dim, "Available models:\n"))
+                for m in models[:20]:
+                    self._output_buffer.append((Neon.dim, f"  {m}\n"))
+            return
+        
+        if args == "cycle":
+            model = await self.agent_core.router.cycle_model()
+            if model:
+                self._output_buffer.append((Neon.ok, f"\nSwitched to model: {model}\n"))
+            else:
+                self._output_buffer.append((Neon.error, "\nNo models available to cycle\n"))
+        else:
+            try:
+                await self.agent_core.router.reconfigure(self.agent_core.router.active_name, model=args)
+                self._output_buffer.append((Neon.ok, f"\nModel set to: {args}\n"))
+            except Exception as e:
+                self._output_buffer.append((Neon.error, f"\nFailed to set model: {e}\n"))
+        if self._app:
+            self._app.invalidate()
     
     async def _handle_session_command(self, args: str):
-        pass  # Implementation needed
+        parts = args.split(" ", 1)
+        subcmd = parts[0] if parts else "list"
+        subargs = parts[1] if len(parts) > 1 else ""
+        
+        if subcmd in ("list", "ls"):
+            sessions = self.session_mgr.list_sessions()
+            if not sessions:
+                self._output_buffer.append((Neon.dim, "\nNo sessions found\n"))
+            else:
+                self._output_buffer.append((Neon.dim, "\nSessions:\n"))
+                for s in sessions[:20]:
+                    current = " *" if s["id"] == self.session_mgr.current else ""
+                    self._output_buffer.append((Neon.dim, f"  {s['id'][:8]} {s['updated'][:19]} {s['message_count']} msgs {s['preview']}{current}\n"))
+        
+        elif subcmd in ("new", "n"):
+            await self.session_mgr.new()
+            self.agent_core.reset()
+            self._output_buffer.append((Neon.ok, "\nNew session created\n"))
+        
+        elif subcmd in ("load", "l"):
+            if not subargs:
+                self._output_buffer.append((Neon.error, "\nUsage: /session load <id>\n"))
+                return
+            ok = await self.session_mgr.load(subargs)
+            if ok:
+                self._output_buffer.append((Neon.ok, f"\nLoaded session: {subargs}\n"))
+            else:
+                self._output_buffer.append((Neon.error, f"\nSession not found: {subargs}\n"))
+        
+        elif subcmd in ("delete", "rm"):
+            if not subargs:
+                self._output_buffer.append((Neon.error, "\nUsage: /session delete <id>\n"))
+                return
+            ok = self.session_mgr.delete(subargs)
+            if ok:
+                self._output_buffer.append((Neon.ok, f"\nDeleted session: {subargs}\n"))
+            else:
+                self._output_buffer.append((Neon.error, f"\nFailed to delete: {subargs}\n"))
+        
+        elif subcmd in ("save", "s"):
+            sid = self.session_mgr.save(self.agent_core.messages, debounce=False)
+            self._output_buffer.append((Neon.ok, f"\nSession saved: {sid}\n"))
+        
+        else:
+            self._output_buffer.append((Neon.error, f"\nUnknown session command: {subcmd}\n"))
+        
+        if self._app:
+            self._app.invalidate()
     
     async def _handle_skill_command(self, args: str):
-        pass  # Implementation needed
+        parts = args.split(" ", 1)
+        subcmd = parts[0] if parts else "list"
+        subargs = parts[1] if len(parts) > 1 else ""
+        
+        if not self.skills:
+            self._output_buffer.append((Neon.error, "\nSkills not available\n"))
+            return
+        
+        if subcmd in ("list", "ls"):
+            skills = self.skills.list_skills()
+            if not skills:
+                self._output_buffer.append((Neon.dim, "\nNo skills loaded\n"))
+            else:
+                self._output_buffer.append((Neon.dim, "\nAvailable skills:\n"))
+                for s in skills:
+                    active = " *" if s in self.skills.get_active() else ""
+                    skill_obj = self.skills.get(s)
+                    desc = skill_obj.description[:60] if skill_obj else ""
+                    self._output_buffer.append((Neon.dim, f"  {s}{active} - {desc}\n"))
+        
+        elif subcmd in ("activate", "on", "enable"):
+            if not subargs:
+                self._output_buffer.append((Neon.error, "\nUsage: /skill activate <name>\n"))
+                return
+            if self.skills.activate(subargs):
+                self._output_buffer.append((Neon.ok, f"\nSkill activated: {subargs}\n"))
+            else:
+                self._output_buffer.append((Neon.error, f"\nSkill not found: {subargs}\n"))
+        
+        elif subcmd in ("deactivate", "off", "disable"):
+            if not subargs:
+                self._output_buffer.append((Neon.error, "\nUsage: /skill deactivate <name>\n"))
+                return
+            self.skills.deactivate(subargs)
+            self._output_buffer.append((Neon.ok, f"\nSkill deactivated: {subargs}\n"))
+        
+        else:
+            self._output_buffer.append((Neon.error, f"\nUnknown skill command: {subcmd}\n"))
+        
+        if self._app:
+            self._app.invalidate()
     
     async def _handle_subagent_command(self, args: str):
-        pass  # Implementation needed
+        parts = args.split(" ", 1)
+        subcmd = parts[0] if parts else "list"
+        subargs = parts[1] if len(parts) > 1 else ""
+        
+        if not self.subagents:
+            self._output_buffer.append((Neon.error, "\nSubagents not available\n"))
+            return
+        
+        if subcmd in ("list", "ls"):
+            agents = self.subagents.list_subagents()
+            if not agents:
+                self._output_buffer.append((Neon.dim, "\nNo subagents loaded\n"))
+            else:
+                self._output_buffer.append((Neon.dim, "\nAvailable subagents:\n"))
+                for a in agents:
+                    sa = self.subagents.get(a)
+                    desc = sa.description[:60] if sa else ""
+                    self._output_buffer.append((Neon.dim, f"  @{a} - {desc}\n"))
+        
+        else:
+            self._output_buffer.append((Neon.error, f"\nUnknown subagent command: {subcmd}\n"))
+        
+        if self._app:
+            self._app.invalidate()
     
     async def _handle_reference_command(self, args: str):
-        pass  # Implementation needed
+        parts = args.split(" ", 1)
+        subcmd = parts[0] if parts else "list"
+        subargs = parts[1] if len(parts) > 1 else ""
+        
+        if not self.config.ref_mgr:
+            self._output_buffer.append((Neon.error, "\nReferences not available\n"))
+            return
+        
+        if subcmd in ("list", "ls"):
+            refs = self.config.ref_mgr.list()
+            if not refs:
+                self._output_buffer.append((Neon.dim, "\nNo references loaded\n"))
+            else:
+                self._output_buffer.append((Neon.dim, "\nAvailable references:\n"))
+                for r in refs:
+                    self._output_buffer.append((Neon.dim, f"  @{r}\n"))
+        
+        else:
+            self._output_buffer.append((Neon.error, f"\nUnknown reference command: {subcmd}\n"))
+        
+        if self._app:
+            self._app.invalidate()
     
     async def _handle_todo_command(self, args: str):
-        pass  # Implementation needed
+        parts = args.split(" ", 1)
+        subcmd = parts[0] if parts else "list"
+        subargs = parts[1] if len(parts) > 1 else ""
+        
+        todos = getattr(self.agent_core, 'todos', None)
+        if not todos:
+            self._output_buffer.append((Neon.error, "\nTodos not available\n"))
+            return
+        
+        if subcmd in ("list", "ls", ""):
+            items = todos.list()
+            if not items:
+                self._output_buffer.append((Neon.dim, "\nNo todos\n"))
+            else:
+                self._output_buffer.append((Neon.dim, "\nTodos:\n"))
+                for i, t in enumerate(items):
+                    status = "✓" if t.get("done") else "○"
+                    self._output_buffer.append((Neon.dim, f"  {i+1}. [{status}] {t['content']}\n"))
+        
+        elif subcmd in ("add", "a"):
+            if not subargs:
+                self._output_buffer.append((Neon.error, "\nUsage: /todo add <content>\n"))
+                return
+            todos.add(subargs)
+            self._output_buffer.append((Neon.ok, f"\nTodo added\n"))
+        
+        elif subcmd in ("done", "d"):
+            if not subargs:
+                self._output_buffer.append((Neon.error, "\nUsage: /todo done <index>\n"))
+                return
+            try:
+                idx = int(subargs) - 1
+                todos.done(idx)
+                self._output_buffer.append((Neon.ok, f"\nTodo marked done\n"))
+            except (ValueError, IndexError):
+                self._output_buffer.append((Neon.error, "\nInvalid index\n"))
+        
+        elif subcmd in ("remove", "rm"):
+            if not subargs:
+                self._output_buffer.append((Neon.error, "\nUsage: /todo remove <index>\n"))
+                return
+            try:
+                idx = int(subargs) - 1
+                todos.remove(idx)
+                self._output_buffer.append((Neon.ok, f"\nTodo removed\n"))
+            except (ValueError, IndexError):
+                self._output_buffer.append((Neon.error, "\nInvalid index\n"))
+        
+        else:
+            self._output_buffer.append((Neon.error, f"\nUnknown todo command: {subcmd}\n"))
+        
+        if self._app:
+            self._app.invalidate()
     
     async def _handle_memory(self, args: str):
-        pass  # Implementation needed
+        parts = args.split(" ", 1)
+        subcmd = parts[0] if parts else "show"
+        subargs = parts[1] if len(parts) > 1 else ""
+        
+        if not self.memory:
+            self._output_buffer.append((Neon.error, "\nMemory not available\n"))
+            return
+        
+        if subcmd in ("show", "s", ""):
+            summary = self.memory.summarize()
+            if summary:
+                self._output_buffer.append((Neon.dim, f"\n{summary}\n"))
+            else:
+                self._output_buffer.append((Neon.dim, "\nMemory is empty\n"))
+        
+        elif subcmd in ("add", "a"):
+            if not subargs:
+                self._output_buffer.append((Neon.error, "\nUsage: /memory add <fact>\n"))
+                return
+            self.memory.add_fact(subargs, source="manual")
+            self._output_buffer.append((Neon.ok, "\nFact added to memory\n"))
+        
+        elif subcmd in ("clear",):
+            self.memory.clear()
+            self._output_buffer.append((Neon.ok, "\nMemory cleared\n"))
+        
+        else:
+            self._output_buffer.append((Neon.error, f"\nUnknown memory command: {subcmd}\n"))
+        
+        if self._app:
+            self._app.invalidate()
     
     async def _run_subagent(self, name: str, prompt: str):
-        pass  # Implementation needed
+        if not self.subagents:
+            self._output_buffer.append((Neon.error, "\nSubagents not available\n"))
+            return
+        
+        subagent = self.subagents.get(name)
+        if not subagent:
+            self._output_buffer.append((Neon.error, f"\nSubagent not found: {name}\n"))
+            return
+        
+        self._output_buffer.append((Neon.dim, f"\nDelegating to @{name}...\n"))
+        if self._app:
+            self._app.invalidate()
+        
+        try:
+            provider = await self.agent_core.router.get_provider()
+            from core.subagent_engine import SubagentEngine
+            engine = SubagentEngine(search_dirs=[])
+            engine.manager = self.subagents
+            result = await engine.run(name, prompt, provider)
+            if result.success:
+                self._output_buffer.append((Neon.ok, f"\n{result.output}\n"))
+            else:
+                self._output_buffer.append((Neon.error, f"\nSubagent failed: {result.error}\n"))
+        except Exception as e:
+            self._output_buffer.append((Neon.error, f"\nSubagent error: {e}\n"))
+        
+        if self._app:
+            self._app.invalidate()
     
     def _auto_suggest_skill(self):
-        pass  # Implementation needed
+        if not self.skills:
+            return
+        # This could be enhanced to suggest skills based on recent messages
+        pass

@@ -46,9 +46,8 @@ class ToolExecutor:
         lsp_diagnostics_callback: Callable[[], Awaitable[None]] | None = None,
         format_callback: Callable[[str], str] | None = None,
     ):
-        from core.permissions import PermissionEvaluator
         self.tools = tools
-        self.permissions = permissions or __import__('core.permissions').permissions.PermissionEvaluator()
+        self.permissions = permissions or PermissionEvaluator()
         self._lsp_callback = lsp_diagnostics_callback
         self._format_callback = format_callback
         self._history: list[dict] = []

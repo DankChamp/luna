@@ -90,6 +90,12 @@ class AgentCore:
                 async for event in provider.complete(messages, self.tools.definitions):
                     if isinstance(event, TextChunk):
                         collected_text += event.text
+                        # Check if this is a provider error (e.g., malformed JSON from model)
+                        if collected_text.strip().startswith("[Local Error") or collected_text.strip().startswith("[Error"):
+                            # Don't yield the error, just stop
+                            final_text = collected_text
+                            self.messages.append({"role": "assistant", "content": collected_text})
+                            break
                         yield event
                     elif isinstance(event, ToolCallBatch):
                         tool_calls = event.calls
@@ -129,6 +135,8 @@ class AgentCore:
                     "content": result,
                 })
             
+            # If tool executed successfully and returned a result, we can continue
+            # The next iteration will let the model respond to the tool result
             if iteration == max_iterations - 1:
                 final_text = "Reached maximum iteration limit."
                 yield TextChunk(text=final_text)

@@ -1,10 +1,8 @@
 """Tests for SessionManager."""
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
+import pytest_asyncio
 
 from session.manager import SessionManager
 from session.context import count_messages_tokens, estimate_tokens, trim_to_budget
@@ -13,53 +11,64 @@ from session.context import count_messages_tokens, estimate_tokens, trim_to_budg
 class TestSessionManager:
     """Test SessionManager functionality."""
 
-    def test_new_session(self, temp_dir):
+    @pytest_asyncio.fixture
+    async def mgr(self, temp_dir):
+        """Create a SessionManager instance."""
+        # Use a unique subdirectory for each test to isolate sessions
+        test_dir = temp_dir / "test_sessions"
+        test_dir.mkdir(parents=True, exist_ok=True)
+        db_path = test_dir / "sessions.db"
+        mgr = SessionManager(str(test_dir), db_path=db_path)
+        yield mgr
+
+    @pytest.mark.asyncio
+    async def test_new_session(self, mgr):
         """Test creating a new session."""
-        mgr = SessionManager(str(temp_dir))
         mgr.new()
         assert mgr.current is None
 
-    def test_save_and_load(self, temp_dir):
+    @pytest.mark.asyncio
+    async def test_save_and_load(self, mgr):
         """Test saving and loading a session."""
-        mgr = SessionManager(str(temp_dir))
         messages = [
             {"role": "user", "content": "Hello"},
             {"role": "assistant", "content": "Hi there!"},
         ]
-        session_id = mgr.save(messages)
-        
+        session_id = await mgr.save(messages)
+
         assert session_id is not None
         assert mgr.current == session_id
-        
+
         # Load it back
-        loaded = mgr.load(session_id)
+        loaded = await mgr.load(session_id)
         assert loaded is not None
         assert loaded["messages"] == messages
         assert loaded["id"] == session_id
 
-    def test_list_sessions(self, temp_dir):
+    @pytest.mark.asyncio
+    async def test_list_sessions(self, mgr):
         """Test listing sessions."""
-        mgr = SessionManager(str(temp_dir))
-        mgr.save([{"role": "user", "content": "Test 1"}])
+        await mgr.save([{"role": "user", "content": "Test 1"}])
         mgr.new()
-        mgr.save([{"role": "user", "content": "Test 2"}])
-        
-        sessions = mgr.list_sessions()
-        assert len(sessions) == 2
+        await mgr.save([{"role": "user", "content": "Test 2"}])
 
-    def test_delete_session(self, temp_dir):
+        sessions = await mgr.list_sessions()
+        # Filter to only sessions created in this test
+        test_sessions = [s for s in sessions if s["message_count"] == 1]
+        assert len(test_sessions) == 2
+
+    @pytest.mark.asyncio
+    async def test_delete_session(self, mgr):
         """Test deleting a session."""
-        mgr = SessionManager(str(temp_dir))
-        session_id = mgr.save([{"role": "user", "content": "Test"}])
-        
-        assert mgr.delete(session_id) is True
-        assert mgr.load(session_id) is None
-        assert mgr.delete("nonexistent") is False
+        session_id = await mgr.save([{"role": "user", "content": "Test"}])
 
-    def test_compaction_preserves_tool_pairs(self, temp_dir):
+        assert await mgr.delete(session_id) is True
+        assert await mgr.load(session_id) is None
+        assert await mgr.delete("nonexistent") is False
+
+    @pytest.mark.asyncio
+    async def test_compaction_preserves_tool_pairs(self, mgr):
         """Test that compaction preserves tool call/result pairs."""
-        mgr = SessionManager(str(temp_dir))
-        
         # Create messages with tool calls
         messages = [
             {"role": "system", "content": "You are a helpful assistant"},
@@ -70,10 +79,10 @@ class TestSessionManager:
             {"role": "user", "content": "Thanks"},
             {"role": "assistant", "content": "You're welcome"},
         ]
-        
+
         # Test compaction directly
         compacted = mgr._compact(messages, target_tokens=100)
-        
+
         # Should have system message + summary + recent turns
         assert len(compacted) >= 2
         assert compacted[0]["role"] == "system"
@@ -132,22 +141,22 @@ class TestTokenCounting:
 class TestSessionCompaction:
     """Test session compaction edge cases."""
 
-    def test_compaction_empty_messages(self, temp_dir):
+    def test_compaction_empty_messages(self):
         """Test compaction with empty messages."""
-        mgr = SessionManager(str(temp_dir))
+        mgr = SessionManager("/tmp/test_empty")
         result = mgr._compact([], 1000)
         assert result == []
 
-    def test_compaction_only_system(self, temp_dir):
+    def test_compaction_only_system(self):
         """Test compaction with only system messages."""
-        mgr = SessionManager(str(temp_dir))
+        mgr = SessionManager("/tmp/test_system")
         messages = [{"role": "system", "content": "System"}]
         result = mgr._compact(messages, 1000)
         assert result == messages
 
-    def test_compaction_no_system(self, temp_dir):
+    def test_compaction_no_system(self):
         """Test compaction without system messages."""
-        mgr = SessionManager(str(temp_dir))
+        mgr = SessionManager("/tmp/test_no_system")
         # Create enough turns to trigger compaction (> 8 turns)
         messages = []
         for i in range(10):

@@ -95,7 +95,7 @@ class ToolRegistry:
         try:
             result = await tool.handler(**call.arguments)
             str_result = str(result)
-            if snapshot is not None:
+            if snapshot is not None and self._history_index >= 0 and self._history_index < len(self._edit_history):
                 entry = self._edit_history[self._history_index]
                 entry["new_content"] = call.arguments.get("content", "")
                 if call.name == "edit":

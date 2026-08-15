@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from core.subagents import SubagentManager
 from core.providers.base import AIProvider
+from core.router import AIRouter
 
 
 @dataclass
@@ -22,8 +23,8 @@ class SubagentEngine:
     Separated from SubagentManager for cleaner Agent architecture.
     """
     
-    def __init__(self, search_dirs: list[str] | None = None):
-        self.manager = SubagentManager(search_dirs=search_dirs)
+    def __init__(self, router: AIRouter, search_dirs: list[str] | None = None):
+        self.manager = SubagentManager(router, *(search_dirs or []))
         self._model_overrides: dict[str, str] = {}
     
     def load_subagents(self) -> list[str]:

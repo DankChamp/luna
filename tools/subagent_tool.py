@@ -1,91 +1,219 @@
 from __future__ import annotations
+from typing import Any, Optional
+from dataclasses import dataclass, field
 
-from pathlib import Path
+from tools.registry import ToolDef, ToolRegistry
+from core.subagents import SubagentManager
+from core.router import AIRouter
+from core.general_subagent import GeneralSubagentManager, TaskDelegation
+from core.errors import SubagentError, ToolError
 
-from core.subagents import SubagentManager, AgentDef
-from .registry import ToolDef
+import anyio
 
 
-def create_subagent_tool(mgr: SubagentManager) -> ToolDef:
-    async def _(
-        name: str,
-        description: str,
+@dataclass
+class SubagentInvocation:
+    """Represents a subagent invocation from the main agent."""
+    name: str
+    prompt: str
+    model: str | None = None
+    allowed_tools: list[str] | None = None
+    blocked_tools: list[str] = field(default_factory=lambda: ["todowrite"])
+    system_prompt: str | None = None
+
+
+def create_task_tool(
+    subagent_manager: SubagentManager,
+    router: AIRouter,
+    parent_tools: Any,
+    model_overrides: dict[str, str] | None = None,
+) -> ToolDef:
+    """Create the task tool for delegating to subagents."""
+    
+    general_manager = GeneralSubagentManager(router, parent_tools)
+
+    async def task(
         prompt: str,
-        tools: list[str] | None = None,
-        color: str = "#ff00ff",
+        agent: str = "general",
+        model: str | None = None,
+        allowed_tools: list[str] | None = None,
+        blocked_tools: list[str] | None = None,
+        system_prompt: str | None = None,
     ) -> str:
-        agent_def = AgentDef(
-            name=name,
-            description=description,
-            prompt=prompt,
-            tools=tools,
-            color=color,
-        )
-        mgr.register(agent_def)
-
-        save_dir = Path.home() / ".luna" / "subagents"
-        save_dir.mkdir(parents=True, exist_ok=True)
-        path = save_dir / f"{name}.md"
-
-        tools_line = ""
-        if tools:
-            tools_line = f"tools: {', '.join(tools)}\n"
-
-        frontmatter = (
-            f"---\n"
-            f"name: {name}\n"
-            f"description: {description}\n"
-            f"{tools_line}"
-            f"color: {color}\n"
-            f"---\n"
-            f"\n"
-            f"{prompt}\n"
-        )
-        path.write_text(frontmatter, encoding="utf-8")
-
-        return (
-            f"Created sub-agent '{name}' and saved to {path}\n"
-            f"Description: {description}\n"
-            f"Tools: {', '.join(tools) if tools else 'all'}"
-        )
+        """
+        Delegate a task to a subagent.
+        
+        Args:
+            prompt: The task description/prompt for the subagent
+            agent: Subagent name (default: "general")
+            model: Optional model override
+            allowed_tools: List of allowed tool names
+            blocked_tools: List of blocked tool names
+            system_prompt: Custom system prompt for the subagent
+            
+        Returns:
+            The subagent's response
+        """
+        try:
+            # Check if it's a known subagent
+            if agent != "general" and subagent_manager.get(agent):
+                subagent = subagent_manager.get(agent)
+                provider = await router.get_provider(model)
+                
+                # Get tools for this subagent
+                tool_defs = subagent.get_tools(allowed_tools)
+                
+                # Build messages
+                system_prompt_text = subagent.build_system_prompt()
+                if system_prompt:
+                    system_prompt_text += f"\n\n{system_prompt}"
+                
+                messages = [
+                    {"role": "system", "content": system_prompt_text},
+                    {"role": "user", "content": prompt},
+                ]
+                
+                full_text = ""
+                async for event in router.get_provider().complete(messages, tool_defs):
+                    if hasattr(event, 'text') and event.text:
+                        full_text += event.text
+                
+                return full_text
+            
+            # General subagent
+            delegation = TaskDelegation(
+                name=agent,
+                prompt=prompt,
+                model=model,
+                allowed_tools=allowed_tools,
+                blocked_tools=blocked_tools or ["todowrite"],
+                system_prompt=system_prompt,
+            )
+            
+            result = await general_manager.run_delegation(delegation)
+            
+            if not result.success:
+                raise SubagentError(f"Subagent '{agent}' failed: {result.error}", agent)
+            
+            return result.output
+            
+        except Exception as e:
+            if isinstance(e, SubagentError):
+                raise
+            raise ToolError(f"Task delegation failed: {e}", "task")
 
     return ToolDef(
-        name="create_subagent",
+        name="task",
         description=(
-            "Create a new sub-agent at runtime with a custom name, description, "
-            "system prompt, and optional tool restrictions. "
-            "The sub-agent is persisted to disk and can be reused later. "
-            "After creation, use the task tool to run it."
+            "Delegate a task to a subagent for parallel execution. "
+            "Use for complex research, multi-file operations, or independent tasks. "
+            "Subagents run in isolated contexts with their own tool access."
         ),
         parameters={
+            "prompt": {
+                "type": "string",
+                "description": "The task description or question for the subagent",
+            },
+            "agent": {
+                "type": "string",
+                "description": "Subagent name (default: 'general'). Use 'general' for research tasks.",
+                "default": "general",
+            },
+            "model": {
+                "type": "string",
+                "description": "Optional model override (e.g., 'nvidia/llama-3.1-8b-instruct')",
+            },
+            "allowed_tools": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of tool names to allow for this subagent",
+            },
+            "blocked_tools": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of tool names to block for this subagent",
+            },
+            "system_prompt": {
+                "type": "string",
+                "description": "Custom system prompt for the subagent",
+            },
+        },
+        required=["prompt"],
+        handler=task,
+    )
+
+
+def create_subagent_tool(
+    subagent_manager: SubagentManager,
+    router: AIRouter,
+) -> ToolDef:
+    """Create tool for listing and managing subagents."""
+
+    async def list_subagents() -> str:
+        """List all available subagents."""
+        agents = subagent_manager.list_subagents()
+        if not agents:
+            return "No subagents available."
+        
+        result = ["Available subagents:"]
+        for name in agents:
+            subagent = subagent_manager.get(name)
+            if subagent:
+                desc = getattr(subagent, 'description', 'No description')
+                result.append(f"  @{name}: {desc}")
+        return "\n".join(result)
+
+    async def run_subagent(
+        name: str,
+        prompt: str,
+        model: str | None = None,
+    ) -> str:
+        """Run a specific subagent."""
+        subagent = subagent_manager.get(name)
+        if not subagent:
+            return f"Subagent '{name}' not found"
+        
+        provider = await router.get_provider(model)
+        tool_defs = subagent.get_tools()
+        
+        system_prompt = subagent.build_system_prompt()
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+        
+        full_text = ""
+        async for event in provider.complete(messages, tool_defs):
+            if hasattr(event, 'text') and event.text:
+                full_text += event.text
+        
+        return full_text
+
+    return ToolDef(
+        name="subagent",
+        description="List or run subagents for specialized tasks",
+        parameters={
+            "action": {
+                "type": "string",
+                "description": "Action to perform",
+                "enum": ["list", "run"],
+            },
             "name": {
                 "type": "string",
-                "description": "Unique name for the sub-agent",
-            },
-            "description": {
-                "type": "string",
-                "description": "Short description of what the sub-agent does",
+                "description": "Subagent name (for 'run' action)",
             },
             "prompt": {
                 "type": "string",
-                "description": (
-                    "System prompt defining the sub-agent's persona, behavior, "
-                    "and instructions. Must include the required output format."
-                ),
+                "description": "Task prompt for the subagent (for 'run' action)",
             },
-            "tools": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Optional list of tools to restrict the sub-agent to "
-                    "(e.g. ['read', 'glob', 'grep']). If omitted, all tools are available."
-                ),
-            },
-            "color": {
+            "model": {
                 "type": "string",
-                "description": "Hex color for display (default: #ff00ff)",
+                "description": "Optional model override",
             },
         },
-        required=["name", "description", "prompt"],
-        handler=_,
+        required=["action"],
+        handler=lambda action, **kwargs: (
+            list_subagents() if action == "list" 
+            else run_subagent(name=kwargs.get("name", ""), prompt=kwargs.get("prompt", ""), model=kwargs.get("model"))
+        ),
     )

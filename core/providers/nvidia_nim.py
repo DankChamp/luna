@@ -60,7 +60,8 @@ class NvidiaNIMProvider(AIProvider):
         tools: list[dict] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         headers = self._build_headers()
-        headers["Authorization"] = f"Bearer {self.api_key}"
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         body = self._build_body(messages, tools)
         max_retries = 3
 

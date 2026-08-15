@@ -1,5 +1,4 @@
 from __future__ import annotations
-import json
 import os
 import subprocess
 from datetime import datetime, timezone
@@ -7,6 +6,8 @@ from pathlib import Path
 from typing import Optional
 
 from .context import count_messages_tokens
+from core.session_db import SessionDatabase, get_session_database
+from core.errors import SessionError
 
 
 COMPACT_THRESHOLD = 80000
@@ -14,12 +15,22 @@ TARGET_AFTER_COMPACT = 40000
 
 
 class SessionManager:
-    def __init__(self, session_dir: str):
+    """Session manager with SQLite backend and JSON auto-migration."""
+
+    def __init__(self, session_dir: str, db_path: Path | None = None):
         self.session_dir = Path(session_dir).expanduser()
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self._current: str | None = None
         self._save_debounce: Optional[float] = None
         self._dirty = False
+        self._db: SessionDatabase | None = None
+        self._db_path = db_path
+
+    async def _get_db(self) -> SessionDatabase:
+        """Get or create database instance."""
+        if self._db is None:
+            self._db = await get_session_database(self._db_path)
+        return self._db
 
     @property
     def current(self) -> str | None:
@@ -73,114 +84,118 @@ class SessionManager:
                 return content[:120].strip()
         return ""
 
-    def list_sessions(self) -> list[dict]:
-        sessions = []
-        for f in sorted(self.session_dir.glob("*.json"), reverse=True):
-            try:
-                data = json.loads(f.read_text())
-                msgs = data.get("messages", [])
-                project = data.get("project", {})
-                last_content = ""
-                for m in reversed(msgs):
-                    if m["role"] == "user":
-                        last_content = m.get("content", "")[:50]
-                        break
-                sessions.append({
-                    "id": f.stem,
-                    "created": data.get("created", ""),
-                    "updated": data.get("updated", ""),
-                    "message_count": len(msgs),
-                    "preview": last_content,
-                    "project": project,
-                })
-            except Exception:
-                continue
-        return sessions
+    async def list_sessions(self) -> list[dict]:
+        db = await self._get_db()
+        sessions = await db.list_sessions(limit=50)
+        result = []
+        for s in sessions:
+            result.append({
+                "id": s.id,
+                "created": s.created_at.isoformat(),
+                "updated": s.updated_at.isoformat(),
+                "message_count": s.message_count,
+                "preview": s.summary or "",
+                "project": {
+                    "path": s.project_path,
+                    "name": s.project_name,
+                    "repo": s.repo,
+                    "branch": s.branch,
+                    "commit": s.commit,
+                    "summary": s.summary,
+                },
+            })
+        return result
 
-    def save(self, messages: list[dict], debounce: bool = True) -> str:
-        """Save session to disk. If debounce=True, batches saves to avoid thrashing."""
-        import time
-        now = datetime.now(timezone.utc).isoformat()
+    async def save(self, messages: list[dict], debounce: bool = True) -> str:
+        """Save session to database. If debounce=True, batches saves to avoid thrashing."""
+        now = datetime.now(timezone.utc)
+        db = await self._get_db()
+
         if self._current is None:
-            self._current = now.replace(":", "-")
-        path = self.session_dir / f"{self._current}.json"
+            session_id = now.strftime("%Y%m%d-%H%M%S-%f")
+            self._current = session_id
+        else:
+            session_id = self._current
 
-        created = now
-        existing_project = None
-        if path.exists():
-            try:
-                existing = json.loads(path.read_text())
-                created = existing.get("created", now)
-                existing_project = existing.get("project")
-            except Exception:
-                pass
+        existing_session = await db.get_session(session_id)
+        created = existing_session.created_at if existing_session else datetime.now(timezone.utc)
 
         total_tokens = count_messages_tokens(messages)
         if total_tokens > COMPACT_THRESHOLD:
             messages = self._compact(messages, TARGET_AFTER_COMPACT)
 
         project = self._capture_metadata()
-        if existing_project:
-            project["path"] = existing_project.get("path", project["path"])
-            project["name"] = existing_project.get("name", project["name"])
-            project["summary"] = existing_project.get("summary", "")
-
         summary = self._auto_summarize(messages)
-        if summary:
-            project["summary"] = summary
 
-        data = {
-            "id": self._current,
-            "created": created,
-            "updated": now,
-            "project": project,
-            "messages": messages,
-        }
-        
-        # Atomic write
-        temp_path = path.with_suffix(".tmp")
-        temp_path.write_text(json.dumps(data, indent=2))
-        temp_path.replace(path)
-        
+        await db.create_session(
+            session_id=session_id,
+            project_path=project.get("path"),
+            project_name=project.get("name"),
+            repo=project.get("repo"),
+            branch=project.get("branch"),
+            commit=project.get("commit"),
+            summary=summary,
+        )
+
+        # Save messages
+        for msg in messages:
+            await db.add_message(
+                session_id=session_id,
+                role=msg.get("role", "user"),
+                content=msg.get("content", ""),
+                tool_calls=msg.get("tool_calls"),
+                tool_call_id=msg.get("tool_call_id"),
+            )
+
         self._dirty = False
-        return self._current
+        return session_id
 
     def mark_dirty(self):
         """Mark session as needing save (for debounced saving)."""
         self._dirty = True
 
-    def flush(self, messages: list[dict]) -> str:
+    async def flush(self, messages: list[dict]) -> str:
         """Force save if dirty."""
         if self._dirty:
-            return self.save(messages, debounce=False)
+            return await self.save(messages, debounce=False)
         return self._current or ""
 
-    def load(self, session_id: str) -> dict | None:
-        path = self.session_dir / f"{session_id}.json"
-        if not path.exists():
+    async def load(self, session_id: str) -> dict | None:
+        db = await self._get_db()
+        messages = await db.get_messages(session_id)
+        if not messages:
             return None
-        try:
-            data = json.loads(path.read_text())
-            self._current = session_id
-            return data
-        except Exception:
+
+        session_data = await db.get_session(session_id)
+        if not session_data:
             return None
+
+        self._current = session_id
+        return {
+            "id": session_data.id,
+            "created": session_data.created_at.isoformat(),
+            "updated": session_data.updated_at.isoformat(),
+            "project": {
+                "path": session_data.project_path,
+                "name": session_data.project_name,
+                "repo": session_data.repo,
+                "branch": session_data.branch,
+                "commit": session_data.commit,
+                "summary": session_data.summary,
+            },
+            "messages": messages,
+        }
 
     def new(self):
         self._current = None
         self._dirty = False
 
-    def delete(self, session_id: str) -> bool:
-        path = self.session_dir / f"{session_id}.json"
-        if not path.exists():
-            return False
-        try:
-            path.unlink()
-            if self._current == session_id:
-                self._current = None
-            return True
-        except Exception:
-            return False
+    async def delete(self, session_id: str) -> bool:
+        db = await self._get_db()
+        result = await db.delete_session(session_id)
+        if result and self._current == session_id:
+            self._current = None
+        return result
 
     def _compact(self, messages: list[dict], target_tokens: int) -> list[dict]:
         """Compact conversation history while preserving tool call/result pairs."""
@@ -194,23 +209,17 @@ class SessionManager:
         compacted = list(system_msgs)
         keep_pairs = 8
 
-        # Group messages into conversation turns (user -> assistant + tool calls/results)
         turns: list[list[dict]] = []
         current_turn: list[dict] = []
-        
+
         for m in others:
             current_turn.append(m)
-            # End of turn: assistant message followed by user message or end of list
-            # Tool calls/results are part of the assistant's turn
             if m["role"] == "assistant":
-                # Look ahead to see if next is user (turn boundary)
-                # But don't break on tool messages - they belong to this turn
                 continue
             elif m["role"] == "user" and len(current_turn) >= 2 and current_turn[-2].get("role") == "assistant":
-                # Previous was assistant, this is new user message - turn boundary
                 turns.append(current_turn[:-1])
                 current_turn = [m]
-        
+
         if current_turn:
             turns.append(current_turn)
 

@@ -5,8 +5,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from core.paths import data_home
 
-MEMORY_DIR = Path.home() / ".luna" / "memory"
+
+MEMORY_DIR = data_home() / "memory"
 
 FACT_PATTERNS = [
     re.compile(r"(?:my|the user's?|the)\s+(\w+(?:\s+\w+){0,3})\s+is\s+(.+?)[.!\n]", re.IGNORECASE),
@@ -17,7 +19,7 @@ FACT_PATTERNS = [
 
 class MemoryStore:
     def __init__(self, path: str | Path | None = None):
-        self._path = Path(path or Path.home() / ".luna" / "memory.json").expanduser()
+        self._path = Path(path or MEMORY_DIR / "memory.json")
         self._data: dict = {"facts": [], "preferences": {}, "project_state": {}}
         self._load()
 

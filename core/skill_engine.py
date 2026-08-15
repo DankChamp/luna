@@ -22,7 +22,7 @@ class SkillEngine:
     """
     
     def __init__(self, search_dirs: list[str] | None = None):
-        self.manager = SkillManager(search_dirs=search_dirs)
+        self.manager = SkillManager(*(search_dirs or []))
         self._active_skills: set[str] = set()
     
     def load_skills(self) -> list[str]:

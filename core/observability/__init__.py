@@ -22,6 +22,7 @@ from .multi_turn import (
     get_delegation_manager,
     delegate_turn,
 )
+from .telemetry import TelemetryManager, TelemetryConfig, LunaMetrics, get_telemetry_manager, init_telemetry
 
 # Initialize Luna observability
 def init_observability(level: str = "INFO", json_format: bool = True):
@@ -52,5 +53,10 @@ __all__ = [
     "DelegationManager",
     "get_delegation_manager",
     "delegate_turn",
+    "TelemetryManager",
+    "TelemetryConfig",
+    "LunaMetrics",
+    "get_telemetry_manager",
+    "init_telemetry",
     "init_observability",
 ]
