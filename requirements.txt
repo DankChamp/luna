@@ -2,6 +2,6 @@ httpx>=0.27.2
 pydantic>=2.8.2
 pydantic-settings>=2.4.0
 rich>=13.7.1
-prompt-toolkit>=3.0.43
+prompt-toolkit>=3.0.53
 aiohttp>=3.9.1
 tiktoken>=0.7.0
