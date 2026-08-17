@@ -4,4 +4,4 @@ pydantic-settings>=2.4.0
 rich>=13.7.1
 prompt-toolkit>=3.0.43
 aiohttp>=3.9.1
-tiktoken>=0.7.0
+tiktoken>=0.13.0

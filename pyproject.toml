@@ -10,16 +10,16 @@ dependencies = [
     "rich>=13.7.1",
     "prompt-toolkit>=3.0.43",
     "aiohttp>=3.9.1",
-    "tiktoken>=0.7.0",
+    "tiktoken>=0.13.0",
     "anyio>=4.0.0",
     "sqlalchemy>=2.0.0",
     "aiosqlite>=0.19.0",
     "pyyaml>=6.0.0",
     "anthropic>=0.30.0",
     "openai>=1.30.0",
-    "opentelemetry-api>=1.20.0",
-    "opentelemetry-sdk>=1.20.0",
-    "opentelemetry-exporter-otlp>=1.20.0",
+    "opentelemetry-api>=1.44.0",
+    "opentelemetry-sdk>=1.44.0",
+    "opentelemetry-exporter-otlp>=1.44.0",
 ]
 
 [project.optional-dependencies]
