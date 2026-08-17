@@ -1,0 +1,49 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "04:00"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps(dev)"
+    groups:
+      dev-dependencies:
+        patterns:
+          - "pytest*"
+          - "ruff"
+          - "mypy"
+          - "httpx-mock"
+      http-clients:
+        patterns:
+          - "httpx"
+          - "aiohttp"
+          - "anthropic"
+          - "openai"
+      data-stack:
+        patterns:
+          - "pydantic*"
+          - "sqlalchemy"
+          - "aiosqlite"
+          - "pyyaml"
+      telemetry:
+        patterns:
+          - "opentelemetry*"
+          - "tiktoken"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "04:00"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
