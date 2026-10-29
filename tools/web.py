@@ -104,7 +104,7 @@ async def web_fetch(url: str) -> str:
                 url,
                 headers={"User-Agent": "Luna/1.0"},
             )
-            
+
             # Handle redirects manually if needed (with validation)
             if resp.is_redirect:
                 location = resp.headers.get("location")
@@ -117,7 +117,7 @@ async def web_fetch(url: str) -> str:
                     return f"Error: Redirects not followed for security (target: {location})"
 
             resp.raise_for_status()
-            
+
             # Check content length before reading
             content_length = resp.headers.get("content-length")
             if content_length and int(content_length) > _MAX_RESPONSE_SIZE:

@@ -1,8 +1,8 @@
 from __future__ import annotations
-import re
-from dataclasses import dataclass, field
-from pathlib import Path
 
+import re
+from dataclasses import dataclass
+from pathlib import Path
 
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 ARG_RE = re.compile(r"\$(\d+|\w+)")

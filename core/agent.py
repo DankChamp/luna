@@ -1,23 +1,24 @@
 from __future__ import annotations
-from pathlib import Path
-from typing import AsyncIterator
 
+from collections.abc import AsyncIterator
+from pathlib import Path
+
+from core.mcp import MCPManager
+from core.modes import MODE_PROMPTS, MODE_TOOL_BLOCKS, AgentMode
+from core.permissions import PermissionEvaluator
 from core.persona import PersonaLoader
+from core.project_config import ProjectConfig
 from core.providers.base import (
     AIProvider,
     StreamEvent,
     TextChunk,
     ToolCallBatch,
-    ToolExecStart,
     ToolExecEnd,
+    ToolExecStart,
 )
 from core.router import AIRouter
-from core.modes import AgentMode, MODE_TOOL_BLOCKS, MODE_PROMPTS
 from core.skills import SkillManager
 from core.subagents import SubagentManager
-from core.mcp import MCPManager
-from core.permissions import PermissionEvaluator
-from core.project_config import ProjectConfig
 from session.context import trim_to_budget
 from tools import create_default_registry
 from tools.task import create_task_tool
@@ -177,7 +178,7 @@ class Agent:
 
         system = {"role": "system", "content": prompt}
 
-        max_tokens = getattr(self.settings, "luna_max_history", 100)
+        max_tokens = getattr(self.settings, "max_history_tokens", 100)
         history = self.messages[-max_tokens * 2:]
 
         trimmed = trim_to_budget(

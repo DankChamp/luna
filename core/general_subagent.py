@@ -1,18 +1,12 @@
 from __future__ import annotations
-from pathlib import Path
-from typing import Optional, Any
-from dataclasses import dataclass, field
-from typing import AsyncIterator
 
-from core.subagents import SubagentManager
-from core.providers.base import AIProvider, TextChunk
+from dataclasses import dataclass, field
+from typing import Any
+
+from core.concurrency import run_parallel
+from core.providers.base import AIProvider
 from core.router import AIRouter
 from tools import create_default_registry
-from core.permissions import PermissionEvaluator
-from core.concurrency import run_parallel, StructuredConcurrency
-from core.errors import SubagentError, ToolError
-
-import anyio
 
 
 @dataclass
@@ -54,10 +48,7 @@ class GeneralSubagent:
     def _get_tools(self) -> Any:
         """Get tool registry for this subagent."""
         if self._tools is None:
-            if self.parent_tools:
-                tools = self.parent_tools
-            else:
-                tools = create_default_registry()
+            tools = self.parent_tools or create_default_registry()
             # Block configured tools
             if self.config.blocked_tools:
                 tools.set_blocked(set(self.config.blocked_tools))
@@ -92,7 +83,7 @@ Guidelines:
         if provider is None:
             provider = await self.router.get_provider()
 
-        tools = self._get_tools()
+        self._get_tools()
         if tools_subset:
             # Filter tools if subset specified
             pass

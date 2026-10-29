@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+import contextlib
 import json
 from pathlib import Path
 
@@ -37,9 +39,7 @@ def load_keybinds(path: str | Path | None = None) -> KeyBindings:
         if handler is None:
             continue
 
-        try:
+        with contextlib.suppress(Exception):
             kb.add(keys, filter=None)(handler)
-        except Exception:
-            pass
 
     return kb

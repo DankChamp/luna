@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.styles import Style as PTKStyle
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from prompt_toolkit import PromptSession
-from prompt_toolkit.styles import Style as PTKStyle
 
 from core.router import AIRouter
 from ui.theme import Neon
@@ -27,7 +27,7 @@ def _render_panel(active: str, providers: list[dict], models: list[str] | None =
 
     if models:
         lines = []
-        for i, m in enumerate(models):
+        for _i, m in enumerate(models):
             marker = " [←]" if m == active_row["model"] else ""
             lines.append(f"{m}{marker}")
         display = ", ".join(lines[:8])

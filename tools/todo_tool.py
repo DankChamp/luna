@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from core.todos import TodoStore
+
 from .registry import ToolDef
 
 
@@ -15,7 +16,7 @@ def create_todo_tools(store: TodoStore) -> list[ToolDef]:
         return f"Todo {id} not found"
 
     async def handle_todo_add(content: str) -> str:
-        item = store.add(content)
+        store.add(content)
         return f"Added todo: {content}"
 
     return [

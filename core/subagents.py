@@ -1,11 +1,12 @@
 from __future__ import annotations
+
 import importlib.util
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from core.providers.base import TextChunk, ToolCall, ToolCallBatch
+from core.providers.base import TextChunk, ToolCallBatch
 
 if TYPE_CHECKING:
     from core.router import AIRouter
@@ -126,11 +127,7 @@ class SubagentManager:
         q = query.lower()
         matched = []
         for agent in self._agents.values():
-            if q in agent.name.lower():
-                matched.append(agent)
-            elif q in agent.description.lower():
-                matched.append(agent)
-            elif any(w in agent.description.lower() for w in q.split()):
+            if q in agent.name.lower() or q in agent.description.lower() or any(w in agent.description.lower() for w in q.split()):
                 matched.append(agent)
         return matched
 
@@ -152,7 +149,7 @@ class SubagentManager:
         tools = create_default_registry()
         if agent_def.tools is not None:
             blocked = set()
-            for t_name, t_def in list(tools._tools.items()):
+            for t_name, _t_def in list(tools._tools.items()):
                 if t_name not in agent_def.tools:
                     blocked.add(t_name)
             tools.set_blocked(blocked)
@@ -172,7 +169,7 @@ class SubagentManager:
         full_text = ""
         max_iterations = 15
 
-        for iteration in range(max_iterations):
+        for _iteration in range(max_iterations):
             collected = ""
             tool_calls_batch = None
 

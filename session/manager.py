@@ -1,14 +1,13 @@
 from __future__ import annotations
+
 import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
-from .context import count_messages_tokens
 from core.session_db import SessionDatabase, get_session_database
-from core.errors import SessionError
 
+from .context import count_messages_tokens, estimate_tokens
 
 COMPACT_THRESHOLD = 80000
 TARGET_AFTER_COMPACT = 40000
@@ -21,7 +20,7 @@ class SessionManager:
         self.session_dir = Path(session_dir).expanduser()
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self._current: str | None = None
-        self._save_debounce: Optional[float] = None
+        self._save_debounce: float | None = None
         self._dirty = False
         self._db: SessionDatabase | None = None
         self._db_path = db_path
@@ -120,7 +119,7 @@ class SessionManager:
             session_id = self._current
 
         existing_session = await db.get_session(session_id)
-        created = existing_session.created_at if existing_session else datetime.now(timezone.utc)
+        existing_session.created_at if existing_session else datetime.now(timezone.utc)
 
         total_tokens = count_messages_tokens(messages)
         if total_tokens > COMPACT_THRESHOLD:
@@ -209,50 +208,65 @@ class SessionManager:
         others = [m for m in messages if m["role"] != "system"]
 
         compacted = list(system_msgs)
-        keep_pairs = 8
 
+        # Group messages into turns (user + assistant pairs)
         turns: list[list[dict]] = []
         current_turn: list[dict] = []
 
         for m in others:
             current_turn.append(m)
+            # End turn on assistant message (with or without tool_calls)
             if m["role"] == "assistant":
-                continue
-            elif m["role"] == "user" and len(current_turn) >= 2 and current_turn[-2].get("role") == "assistant":
-                turns.append(current_turn[:-1])
-                current_turn = [m]
+                turns.append(current_turn)
+                current_turn = []
 
         if current_turn:
             turns.append(current_turn)
 
-        if len(turns) <= keep_pairs:
-            compacted.extend(others)
-            return compacted
+        # Calculate tokens per turn
+        turn_tokens = []
+        for turn in turns:
+            tokens = sum(estimate_tokens(msg.get("content", "") or "", None) for msg in turn)
+            # Add tokens for tool calls
+            for msg in turn:
+                if msg.get("tool_calls"):
+                    for tc in msg["tool_calls"]:
+                        tokens += estimate_tokens(str(tc), None)
+            turn_tokens.append(tokens)
 
-        turns_to_keep = turns[-keep_pairs:]
-        turns_to_summarize = turns[:-keep_pairs]
+        # Keep turns from the end until we fit in budget
+        kept_turns = []
+        kept_tokens = 0
+        for turn, tokens in zip(reversed(turns), reversed(turn_tokens), strict=False):
+            if kept_tokens + tokens > target_tokens:
+                break
+            kept_turns.insert(0, turn)
+            kept_tokens += tokens
 
-        summary_lines = []
-        for turn in turns_to_summarize:
-            user_msg = next((m for m in turn if m["role"] == "user"), None)
-            assist_msg = next((m for m in turn if m["role"] == "assistant"), None)
-            user_text = (user_msg.get("content", "") or "")[:80].strip() if user_msg else ""
-            assist_text = (assist_msg.get("content", "") or "")[:80].strip() if assist_msg else ""
-            parts = []
-            if user_text:
-                parts.append(f"user: {user_text}")
-            if assist_text:
-                parts.append(f"→ {assist_text}")
-            if parts:
-                summary_lines.append("; ".join(parts))
+        # If we dropped turns, add a summary
+        dropped_turns = len(turns) - len(kept_turns)
+        if dropped_turns > 0:
+            summary_lines = []
+            for turn in turns[:-len(kept_turns)]:
+                user_msg = next((m for m in turn if m["role"] == "user"), None)
+                assist_msg = next((m for m in turn if m["role"] == "assistant"), None)
+                user_text = (user_msg.get("content", "") or "")[:80].strip() if user_msg else ""
+                assist_text = (assist_msg.get("content", "") or "")[:80].strip() if assist_msg else ""
+                parts = []
+                if user_text:
+                    parts.append(f"user: {user_text}")
+                if assist_text:
+                    parts.append(f"→ {assist_text}")
+                if parts:
+                    summary_lines.append("; ".join(parts))
 
-        if summary_lines:
-            compacted.append({
-                "role": "system",
-                "content": "[Compacted earlier conversation]\n" + "\n".join(summary_lines[-15:]),
-            })
+            if summary_lines:
+                compacted.append({
+                    "role": "system",
+                    "content": f"[Compacted {dropped_turns} earlier turns]\n" + "\n".join(summary_lines[-15:]),
+                })
 
-        for turn in turns_to_keep:
+        for turn in kept_turns:
             compacted.extend(turn)
 
         return compacted

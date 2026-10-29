@@ -1,7 +1,11 @@
 from __future__ import annotations
+
+import contextlib
 import logging
-from typing import Any, Callable, Awaitable, Protocol
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Protocol
 
 from core.permissions import PermissionEvaluator
 from core.providers.base import ToolCall
@@ -29,7 +33,7 @@ class ToolsProtocol(Protocol):
 class ToolExecutor:
     """
     Full tool execution pipeline.
-    
+
     Handles:
     - Permission evaluation (allow/ask/deny)
     - Pre-execution snapshots (for undo/redo)
@@ -38,7 +42,7 @@ class ToolExecutor:
     - Result formatting and truncation
     - Post-execution callbacks
     """
-    
+
     def __init__(
         self,
         tools: ToolsProtocol,
@@ -52,20 +56,20 @@ class ToolExecutor:
         self._format_callback = format_callback
         self._history: list[dict] = []
         self._history_index = -1
-    
+
     async def execute(self, tool_call: ToolCall) -> str:
         """
         Execute a tool call through the full pipeline.
-        
+
         Returns:
             Formatted result string for the agent
         """
         tool_name = tool_call.name
         tool = self.tools.get(tool_name)
-        
+
         if not tool:
             return f"Error: Unknown tool '{tool_name}'"
-        
+
         # Check permissions
         command_arg = tool_call.arguments.get("command") if tool_name == "bash" else None
         perm_result = self.permissions.evaluate(tool_name, command=command_arg)
@@ -73,55 +77,68 @@ class ToolExecutor:
             return f"Error: Tool '{tool_name}' denied by policy"
         elif perm_result == "ask":
             return f"Error: Tool '{tool_name}' requires confirmation (ask mode): {perm_result}"
-        
+
         # Create snapshot before execution (for undo)
         snapshot_id = self._snapshot_before(tool_name, tool_call.arguments)
-        
+
         try:
             # Execute the tool
             result = await tool.handler(**tool_call.arguments)
-            
+
             # Post-execution: LSP diagnostics refresh
             if self._lsp_callback:
                 try:
                     await self._lsp_callback()
                 except Exception as e:
                     logger.debug("LSP callback failed: %s", e)
-            
+
             # Format result
             formatted = self._format_result(result)
-            
+
             # Record in history
             self._record_execution(tool_name, tool_call.arguments, result, snapshot_id)
-            
+
             return formatted
-            
+
         except Exception as e:
             logger.exception("Tool execution failed: %s", tool_name)
             error_msg = f"Error executing {tool_name}: {e}"
             return error_msg
-    
+
     def _snapshot_before(self, tool_name: str, arguments: dict) -> str | None:
         """Create snapshot before tool execution for undo support."""
         mutating_tools = {"write", "edit", "bash"}
         if tool_name not in mutating_tools:
             return None
-        
+
         snapshot_id = f"{tool_name}_{len(self._history)}"
-        
+
+        # Capture old file content for write/edit
+        old_content = ""
+        file_path = ""
+        if tool_name in ("write", "edit"):
+            file_path = arguments.get("path", "")
+            if file_path:
+                p = Path(file_path).expanduser().resolve()
+                if p.exists():
+                    with contextlib.suppress(Exception):
+                        old_content = p.read_text(encoding="utf-8")
+
         snapshot = {
             "id": snapshot_id,
             "tool": tool_name,
             "arguments": arguments,
+            "file_path": file_path,
+            "old_content": old_content,
             "timestamp": __import__("time").time(),
         }
-        
+
         self._history = self._history[:self._history_index + 1]
         self._history.append(snapshot)
         self._history_index = len(self._history) - 1
-        
+
         return snapshot_id
-    
+
     def _record_execution(self, tool_name: str, arguments: dict, result: Any, snapshot_id: str | None):
         """Record execution in history."""
         record = {
@@ -134,43 +151,53 @@ class ToolExecutor:
         self._history = self._history[:self._history_index + 1]
         self._history.append(record)
         self._history_index = len(self._history) - 1
-    
+
     def _format_result(self, result: Any) -> str:
         """Format tool result for agent consumption."""
         if result is None:
             return "(no output)"
-        
+
         text = str(result)
-        
+
         if self._format_callback:
             text = self._format_callback(text)
-        
+
         max_len = 50_000
         if len(text) > max_len:
             text = text[:max_len] + f"\n... (truncated, {len(result)} total chars)"
-        
+
         return text
-    
+
     def undo_last(self) -> list[str]:
         if self._history_index < 0:
             return ["Nothing to undo"]
-        
+
         snapshot = self._history[self._history_index]
-        if snapshot.get("tool") in ("write", "edit"):
-            self._history_index -= 1
-            return [f"Undid {snapshot['tool']} (snapshot: {snapshot['id']})"]
-        
+        tool = snapshot.get("tool")
+
+        # Restore file content for write/edit
+        if tool in ("write", "edit") and snapshot.get("old_content") is not None:
+            file_path = snapshot.get("file_path", "")
+            if file_path:
+                p = Path(file_path).expanduser().resolve()
+                try:
+                    p.write_text(snapshot["old_content"], encoding="utf-8")
+                    self._history_index -= 1
+                    return [f"Restored {p}"]
+                except Exception as e:
+                    return [f"Error restoring {file_path}: {e}"]
+
         self._history_index -= 1
-        return [f"Undid {snapshot.get('tool', 'action')}"]
-    
+        return [f"Undid {tool or 'action'}"]
+
     def redo_last(self) -> list[str]:
         if self._history_index >= len(self._history) - 1:
             return ["Nothing to redo"]
-        
+
         self._history_index += 1
         snapshot = self._history[self._history_index]
         return [f"Redid {snapshot.get('tool', 'action')} (snapshot: {snapshot['id']})"]
-    
+
     def get_history(self) -> list[dict]:
         """Get execution history."""
         return self._history[:self._history_index + 1]

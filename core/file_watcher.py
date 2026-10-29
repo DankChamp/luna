@@ -1,15 +1,15 @@
 from __future__ import annotations
+
 import asyncio
 import os
+from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import Callable, Coroutine, Optional, Union
-
 
 AsyncCallback = Callable[[list[str]], Coroutine[None, None, None]]
 
 
 class FileWatcher:
-    def __init__(self, callback: Optional[Union[Callable[[list[str]], None], AsyncCallback]] = None):
+    def __init__(self, callback: Callable[[list[str]], None] | AsyncCallback | None = None):
         self._callback = callback
         self._task: asyncio.Task | None = None
         self._known: dict[str, float] = {}
@@ -30,9 +30,8 @@ class FileWatcher:
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             pass
-        except Exception as e:
-            import sys
-            print(f"[file_watcher] error: {e}", file=sys.stderr)
+        except Exception:
+            pass
 
     def _scan(self, directory: Path) -> list[str]:
         changes = []

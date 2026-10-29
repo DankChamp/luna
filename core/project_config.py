@@ -1,8 +1,8 @@
 from __future__ import annotations
+
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 
 def _find_nearest(start: Path, filename: str, max_depth: int = 10) -> Path | None:

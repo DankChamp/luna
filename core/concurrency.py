@@ -1,13 +1,13 @@
 from __future__ import annotations
+
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Callable, TypeVar
 from dataclasses import dataclass
+from typing import Any, TypeVar
+
 import anyio
-from anyio import create_task_group, create_memory_object_stream, CancelScope
+from anyio import CancelScope, create_task_group
 from anyio.abc import TaskGroup
-
-from core.errors import LunaError
-
 
 T = TypeVar("T")
 
@@ -29,7 +29,7 @@ async def run_parallel(
 
     async def run_task(index: int, task: Callable[[], AsyncIterator[T] | T]) -> None:
         try:
-            if hasattr(task, "__call__"):
+            if callable(task):
                 result = task()
                 if hasattr(result, "__aiter__"):
                     async for item in result:

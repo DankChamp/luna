@@ -1,24 +1,16 @@
 from __future__ import annotations
+
+import contextlib
 import json
 import os
 import stat
-from dataclasses import dataclass, field, asdict
-from pathlib import Path
+from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
 
-from core.paths import config_home
-from core.errors import ConfigMigrationError, ConfigError
-
-
-@dataclass
-class ProviderDef:
-    type: str
-    api_key: str = ""
-    base_url: str = ""
-    model: str = ""
-    label: str = ""
+from core import config_home
+from core.errors import ConfigError, ConfigMigrationError
 
 
 @dataclass
@@ -39,17 +31,19 @@ class AgentConfig:
 
 @dataclass
 class LunaConfig:
-    """Full Luna configuration."""
+    """Full Luna configuration (agents + UI settings)."""
     active_agent: str = "build"
     agents: dict[str, AgentConfig] = field(default_factory=dict)
-    providers: dict[str, ProviderDef] = field(default_factory=dict)
     default_model: str | None = None
     theme: str = "neon"
     locale: str = "en"
 
 
 class ConfigManager:
-    """Manages Luna configuration with YAML support and JSON auto-migration."""
+    """Manages Luna configuration (agents, UI) with YAML support and JSON auto-migration.
+
+    Provider configuration comes from Settings (environment variables).
+    """
 
     def __init__(self, env_settings):
         self.env = env_settings
@@ -72,7 +66,7 @@ class ConfigManager:
         if self.json_config_path.exists():
             return self._migrate_from_json()
 
-        return self._seed_from_env()
+        return self._seed_defaults()
 
     def _migrate_from_json(self) -> LunaConfig:
         """Migrate from old JSON config to YAML."""
@@ -86,22 +80,10 @@ class ConfigManager:
                 str(self.config_path),
             )
 
-        # Convert JSON structure to new config
         config = LunaConfig()
 
         # Migrate active agent
         config.active_agent = json_data.get("active", "build")
-
-        # Migrate providers
-        json_providers = json_data.get("providers", {})
-        for name, p in json_providers.items():
-            config.providers[name] = ProviderDef(
-                type=p.get("type", "nvidia"),
-                api_key=p.get("api_key", ""),
-                base_url=p.get("base_url", ""),
-                model=p.get("model", ""),
-                label=p.get("label", ""),
-            )
 
         # Migrate agents (basic structure)
         if "agents" in json_data:
@@ -126,10 +108,8 @@ class ConfigManager:
 
         # Write migrated config
         self.config_path.write_text(yaml.dump(self._config_to_dict(config), default_flow_style=False))
-        try:
+        with contextlib.suppress(OSError):
             os.chmod(self.config_path, stat.S_IRUSR | stat.S_IWUSR)
-        except OSError:
-            pass
 
         # Backup old JSON
         backup_path = self.json_config_path.with_suffix(".json.backup")
@@ -137,29 +117,10 @@ class ConfigManager:
 
         return config
 
-    def _seed_from_env(self) -> LunaConfig:
-        """Create default config from environment variables."""
-        active = "nvidia" if self.env.nvidia_nim_api_key else "local"
-
-        config = LunaConfig(active_agent=active)
-
-        config.providers = {
-            "nvidia": ProviderDef(
-                type="nvidia",
-                api_key=self.env.nvidia_nim_api_key,
-                base_url=self.env.nvidia_nim_base_url,
-                model=self.env.nvidia_nim_default_model,
-            ),
-            "local": ProviderDef(
-                type="local",
-                api_key=self.env.local_api_key,
-                base_url=self.env.local_base_url,
-                model=self.env.local_default_model,
-            ),
-        }
-
+    def _seed_defaults(self) -> LunaConfig:
+        """Create default config with built-in agents."""
+        config = LunaConfig(active_agent="build")
         self._ensure_default_agents(config)
-
         self.save()
         return config
 
@@ -242,16 +203,6 @@ class ConfigManager:
             "default_model": config.default_model,
             "theme": config.theme,
             "locale": config.locale,
-            "providers": {
-                name: {
-                    "type": p.type,
-                    "api_key": p.api_key,
-                    "base_url": p.base_url,
-                    "model": p.model,
-                    "label": p.label,
-                }
-                for name, p in config.providers.items()
-            },
             "agents": {
                 name: {
                     "model": a.model,
@@ -280,9 +231,6 @@ class ConfigManager:
             locale=data.get("locale", "en"),
         )
 
-        for name, p in data.get("providers", {}).items():
-            config.providers[name] = ProviderDef(**p)
-
         for name, a in data.get("agents", {}).items():
             config.agents[name] = AgentConfig(**a)
 
@@ -293,10 +241,8 @@ class ConfigManager:
         data = self._config_to_dict(self.config)
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
         self.config_path.write_text(yaml.dump(data, default_flow_style=False))
-        try:
+        with contextlib.suppress(OSError):
             os.chmod(self.config_path, stat.S_IRUSR | stat.S_IWUSR)
-        except OSError:
-            pass
 
     @property
     def active_agent(self) -> str:
@@ -324,51 +270,6 @@ class ConfigManager:
             self.save()
             return True
         return False
-
-    @property
-    def active_provider(self) -> str:
-        return list(self.config.providers.keys())[0] if self.config.providers else "nvidia"
-
-    def get_provider(self, name: str) -> ProviderDef | None:
-        return self.config.providers.get(name)
-
-    def get_all_providers(self) -> dict[str, ProviderDef]:
-        return self.config.providers.copy()
-
-    def update_provider(self, name: str, **kwargs) -> None:
-        if name not in self.config.providers:
-            return
-        provider = self.config.providers[name]
-        for k, v in kwargs.items():
-            if v is not None and hasattr(provider, k):
-                setattr(provider, k, v)
-        self.save()
-
-    def provider_names(self) -> list[str]:
-        return list(self.config.providers.keys())
-
-    def list_providers_info(self) -> list[dict]:
-        result = []
-        for name, p in self.config.providers.items():
-            key_preview = p.api_key[:8] + "…" if p.api_key else "(none)"
-            result.append({
-                "name": name,
-                "type": p.type,
-                "model": p.model,
-                "key": key_preview,
-                "url": p.base_url,
-                "active": name == self.active_provider,
-            })
-        return result
-
-    def set_key(self, name: str, key: str) -> None:
-        self.update_provider(name, api_key=key)
-
-    def set_model(self, name: str, model: str) -> None:
-        self.update_provider(name, model=model)
-
-    def set_url(self, name: str, url: str) -> None:
-        self.update_provider(name, base_url=url)
 
     def get_model_for_agent(self, agent_name: str) -> str | None:
         """Get model override for a specific agent."""

@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import pytest
 
+from core import validate_path_within_workspace
 from tools.bash import run_command
-from tools.web import web_fetch, _validate_url
-from tools.read import read_file
-from tools.write import write_file
 from tools.edit import edit_file
 from tools.glob import glob_files
-from core.paths import validate_path_within_workspace, _get_workspace_root
+from tools.read import read_file
+from tools.web import _validate_url
+from tools.write import write_file
 
 
 class TestBashTool:
@@ -75,7 +75,7 @@ class TestPathValidation:
         """Test valid paths within workspace."""
         test_file = temp_workspace / "test.txt"
         test_file.write_text("hello")
-        
+
         result = validate_path_within_workspace("test.txt", temp_workspace)
         assert result == test_file.resolve()
 
@@ -183,7 +183,7 @@ class TestFileTools:
             (temp_workspace / "test.py").write_text("print('hi')")
             (temp_workspace / "subdir").mkdir()
             (temp_workspace / "subdir" / "test.py").write_text("print('there')")
-            
+
             result = await glob_files("**/*.py")
             assert "test.py" in result
         finally:
@@ -197,8 +197,7 @@ class TestCustomTools:
     async def test_discover_custom_tools(self, temp_dir):
         """Test discovering custom tools."""
         from tools.custom import discover_custom_tools
-        from tools.registry import ToolDef
-        
+
         # Create a custom tool file
         tool_dir = temp_dir / "custom_tools"
         tool_dir.mkdir()
@@ -223,7 +222,7 @@ my_tool = ToolDef(
     handler=my_handler,
 )
 """)
-        
+
         tools = discover_custom_tools(str(tool_dir))
         # The test tool won't be discovered because it defines its own ToolDef
         # This is expected behavior - custom tools should use the real ToolDef

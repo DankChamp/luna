@@ -1,27 +1,22 @@
 from __future__ import annotations
+
+import contextlib
 import json
-import os
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator
-from dataclasses import dataclass
-import aiosqlite
+
 from sqlalchemy import (
     Column,
+    DateTime,
+    ForeignKey,
+    Integer,
     String,
     Text,
-    DateTime,
-    Integer,
-    ForeignKey,
-    Index,
     select,
-    func,
 )
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, relationship
-
-from core.config_manager import ConfigManager
-from core.errors import SessionError, ConfigMigrationError
 
 
 class Base(DeclarativeBase):
@@ -137,18 +132,14 @@ class SessionDatabase:
         if not pending:
             return
 
-        print(f"Migrating {len(pending)} JSON sessions to SQLite...")
 
         async with self.session_factory() as session:
             for json_file in pending:
-                try:
+                with contextlib.suppress(Exception):
                     await self._migrate_json_session(session, json_file)
-                except Exception as e:
-                    print(f"Failed to migrate {json_file}: {e}")
 
             await session.commit()
 
-        print("Migration complete")
 
     async def _migrate_json_session(self, db_session: AsyncSession, json_file: Path) -> None:
         """Migrate a single JSON session file."""
@@ -201,7 +192,7 @@ class SessionDatabase:
         await db_session.flush()
 
         # Create messages
-        for i, msg in enumerate(messages):
+        for _i, msg in enumerate(messages):
             msg_model = MessageModel(
                 session_id=session_id,
                 role=msg.get("role", "user"),

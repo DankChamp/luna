@@ -18,7 +18,7 @@ try:
 except Exception:  # pragma: no cover - non-X11 environments
     _XLIB_OK = False
 
-_DISPLAY: "X11Clipboard | None" = None
+_DISPLAY: X11Clipboard | None = None
 _DISPLAY_LOCK = threading.Lock()
 
 
@@ -157,7 +157,7 @@ class X11Clipboard:
                 time.sleep(0.02)
 
 
-def clipboard_backend() -> "X11Clipboard | None":
+def clipboard_backend() -> X11Clipboard | None:
     """Get a shared clipboard backend, or None when no X display exists."""
     global _DISPLAY
     if not _XLIB_OK:

@@ -1,20 +1,20 @@
 from __future__ import annotations
-from contextlib import asynccontextmanager
-from typing import Any, Optional
-from dataclasses import dataclass
-import os
 
-from opentelemetry import trace, metrics
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import Any
+
+from opentelemetry import metrics, trace
+from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.metrics import Counter, Histogram, UpDownCounter
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import ConsoleMetricExporter, PeriodicExportingMetricReader
+from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader, ConsoleMetricExporter
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 from opentelemetry.semconv.resource import ResourceAttributes
 from opentelemetry.trace import Span, SpanKind, Status, StatusCode
-from opentelemetry.metrics import Counter, Histogram, UpDownCounter
 
 from core.config_manager import ConfigManager
 

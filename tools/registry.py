@@ -1,12 +1,13 @@
 from __future__ import annotations
+
+import contextlib
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Awaitable, Optional
 
-from core.providers.base import ToolCall
 from core.permissions import PermissionEvaluator
-from core.tool_executor import ToolExecutor, ExecutionResult
-
+from core.providers.base import ToolCall
+from core.tool_executor import ToolExecutor
 
 ToolHandler = Callable[..., Awaitable[str]]
 
@@ -27,9 +28,9 @@ class ToolRegistry:
         self._permissions: PermissionEvaluator = PermissionEvaluator()
         self._edit_history: list[dict] = []
         self._history_index: int = -1
-        self.formatter: Optional[Callable[[str], Awaitable[str]]] = None
-        self.lsp_diagnostics: Optional[Callable[[str], Awaitable[list[dict]]]] = None
-        self._executor: Optional[ToolExecutor] = None
+        self.formatter: Callable[[str], Awaitable[str]] | None = None
+        self.lsp_diagnostics: Callable[[str], Awaitable[list[dict]]] | None = None
+        self._executor: ToolExecutor | None = None
 
     def register(self, tool: ToolDef):
         self._tools[tool.name] = tool
@@ -72,7 +73,7 @@ class ToolRegistry:
         if self._executor:
             result = await self._executor.execute(call)
             return result
-        
+
         # Fallback to built-in execution
         if call.name in self._blocked:
             return f"Error: tool '{call.name}' is not available in the current mode"
@@ -132,10 +133,8 @@ class ToolRegistry:
         p = Path(path).expanduser().resolve()
         old_content = ""
         if p.exists():
-            try:
+            with contextlib.suppress(Exception):
                 old_content = p.read_text(encoding="utf-8")
-            except Exception:
-                pass
 
         if self._history_index < len(self._edit_history) - 1:
             self._edit_history = self._edit_history[: self._history_index + 1]

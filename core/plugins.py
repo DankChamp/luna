@@ -1,12 +1,17 @@
+"""Luna plugin system with entry point support."""
 from __future__ import annotations
+
+import contextlib
+import importlib.metadata
 import importlib.util
 import sys
+from collections.abc import Awaitable, Callable
 from dataclasses import field
 from pathlib import Path
-from typing import Any, Callable, Awaitable, Optional
+from typing import Any
 
-from tools.registry import ToolDef, ToolRegistry
 from core.errors import PluginError
+from tools.registry import ToolDef, ToolRegistry
 
 
 class Plugin:
@@ -39,7 +44,7 @@ class ToolPlugin(Plugin):
 
 
 class PluginManager:
-    """Manages plugin discovery and loading."""
+    """Manages plugin discovery and loading from directories and entry points."""
 
     def __init__(self, plugin_dirs: list[str | Path] | None = None):
         self.plugin_dirs = [Path(d).expanduser().resolve() for d in (plugin_dirs or [])]
@@ -53,7 +58,7 @@ class PluginManager:
             self.plugin_dirs.append(p)
 
     def discover_plugins(self) -> list[str]:
-        """Discover all available plugins."""
+        """Discover all available plugins from directories."""
         discovered = []
         for dir_path in self.plugin_dirs:
             if not dir_path.exists():
@@ -63,8 +68,19 @@ class PluginManager:
                     discovered.append(item.name)
         return discovered
 
+    def discover_entrypoint_plugins(self) -> list[str]:
+        """Discover plugins from installed packages via entry points."""
+        discovered = []
+        try:
+            entry_points = importlib.metadata.entry_points(group="luna.plugins")
+            for ep in entry_points:
+                discovered.append(ep.name)
+        except Exception:
+            pass
+        return discovered
+
     def load_plugin(self, name: str) -> Plugin | None:
-        """Load a plugin by name."""
+        """Load a plugin by name from directories."""
         for dir_path in self.plugin_dirs:
             plugin_path = dir_path / name
             if not plugin_path.exists():
@@ -94,13 +110,34 @@ class PluginManager:
 
         return None
 
+    def load_entrypoint_plugin(self, name: str) -> Plugin | None:
+        """Load a plugin from an entry point."""
+        try:
+            entry_points = importlib.metadata.entry_points(group="luna.plugins")
+            for ep in entry_points:
+                if ep.name == name:
+                    plugin_class = ep.load()
+                    if isinstance(plugin_class, type) and issubclass(plugin_class, Plugin):
+                        plugin = plugin_class(name)
+                        self._plugins[name] = plugin
+                        return plugin
+        except Exception as e:
+            raise PluginError(f"Failed to load entry point plugin '{name}': {e}", name)
+        return None
+
     def load_all_plugins(self) -> dict[str, Plugin]:
-        """Load all discovered plugins."""
+        """Load all discovered plugins from directories and entry points."""
+        # Load directory-based plugins
         for name in self.discover_plugins():
-            try:
+            with contextlib.suppress(Exception):
                 self.load_plugin(name)
-            except Exception as e:
-                print(f"Warning: Failed to load plugin '{name}': {e}")
+
+        # Load entry point plugins
+        for name in self.discover_entrypoint_plugins():
+            if name not in self._plugins:
+                with contextlib.suppress(Exception):
+                    self.load_entrypoint_plugin(name)
+
         return self._plugins.copy()
 
     def get_plugin(self, name: str) -> Plugin | None:
@@ -112,10 +149,8 @@ class PluginManager:
     def unload_plugin(self, name: str) -> bool:
         if name in self._plugins:
             plugin = self._plugins[name]
-            try:
+            with contextlib.suppress(Exception):
                 plugin.shutdown()
-            except Exception:
-                pass
             del self._plugins[name]
             # Remove tool mappings
             tools_to_remove = [t for t, p in self._tool_to_plugin.items() if p == name]
@@ -206,4 +241,9 @@ class MyPlugin(ToolPlugin):
 
     async def my_handler(self, input: str) -> str:
         return f"Processed: {input}"
+
+# For entry point plugins, create a package with:
+# pyproject.toml:
+# [project.entry-points."luna.plugins"]
+# my_plugin = "my_package.plugin:MyPlugin"
 """

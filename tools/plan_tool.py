@@ -1,13 +1,11 @@
 from __future__ import annotations
-from pathlib import Path
-from typing import Optional, Any
+
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from dataclasses import dataclass, field
+from pathlib import Path
 
-from tools.registry import ToolDef, ToolRegistry
 from core.errors import ToolError
-
-import anyio
+from tools.registry import ToolDef
 
 
 @dataclass
@@ -27,8 +25,8 @@ class PlanManager:
     def __init__(self, plans_dir: Path | None = None):
         self.plans_dir = plans_dir or Path.home() / ".luna" / "plans"
         self.plans_dir.mkdir(parents=True, exist_ok=True)
-        self._current_plan: Optional[PlanData] = None
-        self._current_plan_path: Optional[Path] = None
+        self._current_plan: PlanData | None = None
+        self._current_plan_path: Path | None = None
 
     def _get_plan_path(self, title: str) -> Path:
         """Get plan file path from title."""
@@ -56,7 +54,7 @@ class PlanManager:
         self._save_plan()
         return plan
 
-    def load_plan(self, title: str) -> Optional[PlanData]:
+    def load_plan(self, title: str) -> PlanData | None:
         """Load a plan by title."""
         path = self._get_plan_path(title)
         if not path.exists():
@@ -107,13 +105,7 @@ class PlanManager:
             elif line.startswith("## Steps"):
                 in_steps = True
                 in_description = False
-            elif line.startswith("## Status"):
-                in_description = False
-                in_steps = False
-            elif line.startswith("## Created"):
-                in_description = False
-                in_steps = False
-            elif line.startswith("## Updated"):
+            elif line.startswith("## Status") or line.startswith("## Created") or line.startswith("## Updated"):
                 in_description = False
                 in_steps = False
             elif line.startswith("- [ ]") or line.startswith("- [x]"):
@@ -155,7 +147,7 @@ class PlanManager:
             "## Steps",
         ]
 
-        for i, step in enumerate(plan.steps):
+        for _i, step in enumerate(plan.steps):
             checkbox = "- [x]" if step.get("done") else "- [ ]"
             lines.append(f"{checkbox} {step.get('text', '')}")
 
@@ -199,7 +191,7 @@ class PlanManager:
             return True
         return False
 
-    def get_current_plan(self) -> Optional[PlanData]:
+    def get_current_plan(self) -> PlanData | None:
         return self._current_plan
 
     def close_plan(self, status: str = "completed") -> None:
@@ -222,18 +214,18 @@ def create_plan_enter_tool(plans_dir: Path | None = None) -> ToolDef:
     ) -> str:
         """
         Enter plan mode by creating a new plan.
-        
+
         Args:
             title: Plan title (used as filename)
             description: Plan description
             steps: Optional initial steps
-            
+
         Returns:
             Confirmation message with plan details
         """
         step_dicts = [{"done": False, "text": s} for s in (steps or [])]
         plan = plan_manager.create_plan(title, description, step_dicts)
-        
+
         return f"Plan created: {plan.title}\nStatus: {plan.status}\nSteps: {len(plan.steps)}"
 
     return ToolDef(
@@ -270,10 +262,10 @@ def create_plan_exit_tool(plans_dir: Path | None = None) -> ToolDef:
     ) -> str:
         """
         Exit plan mode and save the plan.
-        
+
         Args:
             status: Final status - 'completed', 'abandoned', or 'active'
-            
+
         Returns:
             Confirmation message
         """
@@ -315,7 +307,7 @@ def create_plan_manage_tool(plans_dir: Path | None = None) -> ToolDef:
     ) -> str:
         """
         Manage plans.
-        
+
         Args:
             action: 'list', 'load', 'delete', 'show'
             title: Plan title (required for load, delete, show)
@@ -324,7 +316,7 @@ def create_plan_manage_tool(plans_dir: Path | None = None) -> ToolDef:
             plans = plan_manager.list_plans()
             if not plans:
                 return "No plans found."
-            
+
             result = ["Plans:"]
             for p in plans:
                 status_icon = "✓" if p["status"] == "completed" else "○"
@@ -354,7 +346,7 @@ def create_plan_manage_tool(plans_dir: Path | None = None) -> ToolDef:
             plan = plan_manager.load_plan(title)
             if not plan:
                 return f"Plan not found: {title}"
-            
+
             lines = [f"# {plan.title}", f"Status: {plan.status}"]
             if plan.description:
                 lines.extend(["", "Description:", plan.description])
@@ -399,7 +391,7 @@ def create_plan_step_tool(plans_dir: Path | None = None) -> ToolDef:
     ) -> str:
         """
         Manage plan steps.
-        
+
         Args:
             action: 'add', 'complete', 'uncomplete', 'remove', 'list'
             text: Step text (for 'add')
@@ -439,7 +431,7 @@ def create_plan_step_tool(plans_dir: Path | None = None) -> ToolDef:
             plan = plan_manager.get_current_plan()
             if not plan or not plan.steps:
                 return "No steps in current plan."
-            
+
             lines = ["Current plan steps:"]
             for i, step in enumerate(plan.steps):
                 status = "✓" if step.get("done") else "○"

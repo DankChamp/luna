@@ -9,20 +9,32 @@ dependencies = [
     "pydantic-settings>=2.4.0",
     "rich>=13.7.1",
     "prompt-toolkit>=3.0.43",
-    "aiohttp>=3.9.1",
     "tiktoken>=0.7.0",
-    "anyio>=4.0.0",
-    "sqlalchemy>=2.0.0",
-    "aiosqlite>=0.19.0",
-    "pyyaml>=6.0.0",
-    "anthropic>=0.30.0",
-    "openai>=1.30.0",
+    "pyperclip>=1.8.2",
+    "structlog>=24.1.0",
+]
+
+[project.optional-dependencies]
+# Core providers (pick one or more)
+nvidia = []  # Uses httpx from core
+local = []   # Uses httpx from core
+openai = ["openai>=1.30.0"]
+anthropic = ["anthropic>=0.30.0"]
+
+# Features
+bridge = ["aiohttp>=3.9.1"]           # Bridge server
+sessions = ["sqlalchemy>=2.0.0", "aiosqlite>=0.19.0"]  # SQLite sessions
+observability = [
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
     "opentelemetry-exporter-otlp>=1.20.0",
 ]
+yaml = ["pyyaml>=6.0.0"]              # YAML config (optional, TOML is default)
+anyio = ["anyio>=4.0.0"]              # Anyio support
 
-[project.optional-dependencies]
+# Meta groups
+full = ["nvidia", "local", "openai", "anthropic", "bridge", "sessions", "observability", "yaml", "anyio"]
+minimal = []  # Just core deps
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
@@ -49,3 +61,7 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 ignore_missing_imports = true
+
+# Plugin entry points
+[project.entry-points."luna.plugins"]
+# Example: my_plugin = "my_package.plugin:MyPlugin"

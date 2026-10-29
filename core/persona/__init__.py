@@ -1,6 +1,6 @@
 from __future__ import annotations
-from pathlib import Path
 
+from pathlib import Path
 
 DEFAULT_LUNA_PERSONA = """You are Luna, a coding specialist AI. You are technical, precise, and direct. You don't do small talk or pleasantries — you write, edit, debug, and refactor code.
 
@@ -48,11 +48,11 @@ When you need to run a command, call the appropriate function with the required 
 
 class PersonaLoader:
     """Load and build system prompts for personas."""
-    
+
     def __init__(self, persona_text: str | None = None, persona_dir: str | None = None):
         self._persona_text = persona_text
         self._persona_dir = persona_dir
-    
+
     def build_system_prompt(self) -> str:
         if self._persona_text:
             return self._persona_text
@@ -65,6 +65,6 @@ def load_luna_persona(persona_dir: str | None = None) -> str:
         persona_path = Path(persona_dir) / "luna.md"
         if persona_path.exists():
             return persona_path.read_text()
-    
+
     # Fallback to default
     return DEFAULT_LUNA_PERSONA

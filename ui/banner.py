@@ -2,7 +2,6 @@ from rich.panel import Panel
 
 from .theme import Neon
 
-
 BANNER_ART = """\
 [bold #ff00ff]   ██╗     ██╗   ██╗███╗   ██╗ █████╗ [/bold #ff00ff]
 [bold #ff00ff]   ██║     ██║   ██║████╗  ██║██╔══██╗[/bold #ff00ff]

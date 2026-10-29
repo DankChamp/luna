@@ -1,14 +1,15 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING, Optional
+
+from typing import TYPE_CHECKING
 
 from prompt_toolkit.completion import Completer, Completion
 
 if TYPE_CHECKING:
+    from core.commands import CustomCommand
+    from core.references import ReferenceManager
+    from core.router import AIRouter
     from core.subagents import SubagentManager
     from core.themes import ThemeManager
-    from core.references import ReferenceManager
-    from core.commands import CustomCommand
-    from core.router import AIRouter
 
 SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "Show help"),

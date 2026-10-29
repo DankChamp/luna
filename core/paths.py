@@ -14,6 +14,7 @@ append the legacy ~/.luna/<name> path as a fallback so existing users' data
 keeps working untouched. New installs land in the XDG-correct spot.
 """
 from __future__ import annotations
+
 import os
 from pathlib import Path
 
@@ -77,32 +78,32 @@ def _get_workspace_root() -> Path:
 
 def validate_path_within_workspace(path: str | Path, workspace_root: Path | None = None) -> Path:
     """Validate that a path is within the workspace root to prevent path traversal.
-    
+
     Args:
         path: The path to validate (can be relative or absolute)
         workspace_root: Optional workspace root. If not provided, uses git root or CWD.
-    
+
     Returns:
         Resolved Path object if valid.
-    
+
     Raises:
         ValueError: If path attempts to escape workspace root.
     """
     if workspace_root is None:
         workspace_root = _get_workspace_root()
-    
+
     workspace_root = workspace_root.resolve()
     path_obj = Path(path).expanduser()
-    
+
     # If path is relative, resolve it against workspace_root
     if not path_obj.is_absolute():
         path_obj = (workspace_root / path_obj).resolve()
     else:
         path_obj = path_obj.resolve()
-    
+
     try:
         path_obj.relative_to(workspace_root)
     except ValueError:
         raise ValueError(f"Path '{path}' is outside workspace root '{workspace_root}'")
-    
+
     return path_obj

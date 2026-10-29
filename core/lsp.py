@@ -1,9 +1,9 @@
 from __future__ import annotations
+
 import asyncio
+import contextlib
 import json
 from pathlib import Path
-from typing import Optional
-
 
 BUILTIN_LSP: dict[str, dict] = {
     "pyright": {
@@ -179,10 +179,8 @@ class LSPServer:
             })
         except Exception:
             pass
-        try:
+        with contextlib.suppress(Exception):
             self._process.kill()
-        except Exception:
-            pass
         self._process = None
         self._ready.clear()
 

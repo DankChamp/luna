@@ -1,6 +1,7 @@
 from __future__ import annotations
+
 import json
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import httpx
 
@@ -55,11 +56,11 @@ class LocalProvider(AIProvider):
             chunk = json.loads(line)
         except json.JSONDecodeError:
             return None
-        
+
         message = chunk.get("message", {})
         content = message.get("content", "")
         tool_calls = message.get("tool_calls", [])
-        
+
         return {
             "content": content,
             "tool_calls": tool_calls,
@@ -114,19 +115,19 @@ class LocalProvider(AIProvider):
         headers = self._build_headers()
         if self.api_key and not self._is_ollama:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        
+
         if self._is_ollama:
             body = self._build_ollama_body(messages, tools)
         else:
             body = self._build_body(messages, tools)
-        
+
         max_retries = 2
 
         for attempt in range(max_retries):
             try:
                 async with httpx.AsyncClient(timeout=180.0) as client:
                     url = self._get_chat_url()
-                    
+
                     # For Ollama with tools, use non-streaming (streaming doesn't support tool_calls properly)
                     if self._is_ollama and tools:
                         body["stream"] = False
@@ -135,12 +136,12 @@ class LocalProvider(AIProvider):
                             error_text = resp.text
                             yield TextChunk(text=f"[Local Error {resp.status_code}] {error_text}")
                             return
-                        
+
                         data = resp.json()
                         message = data.get("message", {})
                         content = message.get("content", "")
                         tool_calls = message.get("tool_calls", [])
-                        
+
                         # Some models (like qwen2.5-coder) return tool calls in content as JSON
                         # Parse it if it looks like a tool call
                         if content and not tool_calls:
@@ -161,16 +162,16 @@ class LocalProvider(AIProvider):
                                         content = ""
                                 except json.JSONDecodeError:
                                     pass
-                        
+
                         if content:
                             yield TextChunk(text=content)
-                        
+
                         if tool_calls:
                             for tc in tool_calls:
                                 fn = tc.get("function", {})
                                 tool_name = fn.get("name", "")
                                 tool_args = fn.get("arguments", {})
-                                
+
                                 # Map common hallucinated tool names to actual tools
                                 if tool_name in ("create_folder", "mkdir", "make_directory"):
                                     tool_name = "bash"
@@ -179,14 +180,14 @@ class LocalProvider(AIProvider):
                                     tool_name = "bash"
                                     if "command" not in tool_args:
                                         tool_args = {"command": tool_args.get("cmd", tool_args.get("command", ""))}
-                                
+
                                 yield ToolCallBatch(calls=[ToolCall(
                                     id=tc.get("id", f"call_{len(tool_calls)}"),
                                     name=tool_name,
                                     arguments=tool_args,
                                 )])
                         return
-                    
+
                     # Streaming path (no tools, or non-Ollama)
                     async with client.stream("POST", url, json=body, headers=headers) as resp:
                         if resp.status_code != 200:
@@ -196,7 +197,7 @@ class LocalProvider(AIProvider):
                                 import asyncio
                                 await asyncio.sleep(2 ** attempt)
                                 continue
-                            
+
                             # Try to extract tool call from Ollama 400 error (model outputting malformed tool call)
                             if resp.status_code == 400 and "Value looks like object" in error_str:
                                 import re
@@ -214,12 +215,12 @@ class LocalProvider(AIProvider):
                                             return
                                     except json.JSONDecodeError:
                                         pass
-                            
+
                             yield TextChunk(text=f"[Local Error {resp.status_code}] {error_str}")
                             return
 
                         tool_calls_accum: dict[int, dict] = {}
-                        
+
                         if self._is_ollama:
                             # Ollama native streaming format
                             async for line in resp.aiter_lines():
@@ -228,10 +229,10 @@ class LocalProvider(AIProvider):
                                 parsed = self._parse_ollama_stream(line)
                                 if not parsed:
                                     continue
-                                
+
                                 if parsed["content"]:
                                     yield TextChunk(text=parsed["content"])
-                                
+
                                 if parsed["tool_calls"]:
                                     for tc in parsed["tool_calls"]:
                                         fn = tc.get("function", {})
@@ -240,7 +241,7 @@ class LocalProvider(AIProvider):
                                             name=fn.get("name", ""),
                                             arguments=fn.get("arguments", {}),
                                         )])
-                                
+
                                 if parsed["done"]:
                                     return
                         else:

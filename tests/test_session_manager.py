@@ -4,8 +4,8 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 
-from session.manager import SessionManager
 from session.context import count_messages_tokens, estimate_tokens, trim_to_budget
+from session.manager import SessionManager
 
 
 class TestSessionManager:

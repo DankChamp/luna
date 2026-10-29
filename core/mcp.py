@@ -1,11 +1,11 @@
 from __future__ import annotations
+
 import asyncio
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any
 
-from tools.registry import ToolRegistry, ToolDef
+from tools.registry import ToolDef, ToolRegistry
 
 
 @dataclass
@@ -124,10 +124,11 @@ class MCPManager:
         return server
 
     def register_tools(self, registry: ToolRegistry):
-        for srv_name, server in self.servers.items():
+        for _srv_name, server in self.servers.items():
             for mcp_tool in server.tools:
                 srv = server
-                handler = lambda t_name=mcp_tool.name, s=srv, **kw: s.call_tool(t_name, kw)
+                def handler(t_name=mcp_tool.name, s=srv, **kw):
+                    return s.call_tool(t_name, kw)
                 td = ToolDef(
                     name=mcp_tool.name,
                     description=mcp_tool.description,

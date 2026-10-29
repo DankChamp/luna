@@ -2,15 +2,17 @@
 Resilience patterns for inter-service communication.
 """
 from __future__ import annotations
+
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import Any, Callable, Awaitable, Optional
-from enum import Enum
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any
 
-from core.observability import get_metrics, MetricNames, get_tracer, trace_span
+from core.observability import MetricNames, get_metrics, trace_span
 
 logger = logging.getLogger(__name__)
 
@@ -44,13 +46,13 @@ class RetryConfig:
 class CircuitBreaker:
     """
     Circuit breaker for protecting against cascading failures.
-    
+
     States:
     - CLOSED: Normal operation, requests pass through
     - OPEN: Too many failures, requests fail fast
     - HALF_OPEN: Testing recovery, limited requests allowed
     """
-    
+
     def __init__(self, name: str, config: CircuitBreakerConfig | None = None):
         self.name = name
         self.config = config or CircuitBreakerConfig()
@@ -59,7 +61,7 @@ class CircuitBreaker:
         self._success_count = 0
         self._last_failure_time: float | None = None
         self._lock = __import__("threading").RLock()
-    
+
     @property
     def state(self) -> CircuitState:
         with self._lock:
@@ -70,20 +72,20 @@ class CircuitBreaker:
                     self._state = CircuitState.HALF_OPEN
                     self._success_count = 0
             return self._state
-    
+
     async def call(self, func: Callable[..., Awaitable[Any]], *args, **kwargs) -> Any:
         """Execute function with circuit breaker protection."""
         if self.state == CircuitState.OPEN:
             raise CircuitBreakerOpenError(f"Circuit breaker {self.name} is OPEN")
-        
+
         try:
             result = await func(*args, **kwargs)
             self._on_success()
             return result
-        except Exception as e:
+        except Exception:
             self._on_failure()
             raise
-    
+
     def _on_success(self):
         with self._lock:
             self._failure_count = 0
@@ -92,14 +94,14 @@ class CircuitBreaker:
                 if self._success_count >= self.config.success_threshold:
                     self._state = CircuitState.CLOSED
                     self._success_count = 0
-    
+
     def _on_failure(self):
         with self._lock:
             self._failure_count += 1
             self._last_failure_time = time.time()
             if self._failure_count >= self.config.failure_threshold:
                 self._state = CircuitState.OPEN
-    
+
     def reset(self):
         """Manually reset the circuit breaker."""
         with self._lock:
@@ -121,27 +123,27 @@ async def with_retry(
 ) -> Any:
     """
     Execute a function with retry logic.
-    
+
     Args:
         func: Async function to call
         config: Retry configuration
         on_retry: Optional callback called on each retry (exception, attempt_number)
-    
+
     Returns:
         Result of the function call
-    
+
     Raises:
         Last exception if all retries exhausted
     """
     config = config or RetryConfig()
     last_exception = None
-    
+
     for attempt in range(config.max_attempts):
         try:
             return await func()
         except config.retryable_exceptions as e:
             last_exception = e
-            
+
             if attempt < config.max_attempts - 1:
                 delay = min(
                     config.base_delay * (config.exponential_base ** attempt),
@@ -151,10 +153,10 @@ async def with_retry(
                 import random
                 delay += delay * config.jitter * random.uniform(-1, 1)
                 delay = max(0, delay)
-                
+
                 if on_retry:
                     await on_retry(e, attempt + 1)
-                
+
                 logger.warning(
                     f"Retry attempt {attempt + 1}/{config.max_attempts} after {delay:.2f}s: {e}"
                 )
@@ -162,7 +164,7 @@ async def with_retry(
             else:
                 # Last attempt failed
                 raise
-    
+
     raise last_exception
 
 
@@ -170,7 +172,7 @@ class ResilientClient:
     """
     Wrapper for HTTP clients with circuit breaker, retry, and timeout.
     """
-    
+
     def __init__(
         self,
         name: str,
@@ -182,8 +184,8 @@ class ResilientClient:
         self.circuit_breaker = CircuitBreaker(name, circuit_config)
         self.retry_config = retry_config or RetryConfig()
         self.default_timeout = default_timeout
-        self._client: Optional[Any] = None
-    
+        self._client: Any | None = None
+
     @asynccontextmanager
     async def _get_client(self):
         """Get or create HTTP client."""
@@ -196,13 +198,13 @@ class ResilientClient:
         except Exception:
             # Don't close client on error, let it be reused
             raise
-    
+
     async def close(self):
         """Close the underlying HTTP client."""
         if self._client and not self._client.is_closed:
             await self._client.close()
             self._client = None
-    
+
     async def request(
         self,
         method: str,
@@ -210,28 +212,28 @@ class ResilientClient:
         **kwargs,
     ) -> Any:
         """Make HTTP request with resilience patterns."""
-        
+
         async def _make_request():
             async with self._get_client() as client:
                 async with client.request(method, url, **kwargs) as resp:
                     resp.raise_for_status()
                     return await resp.json()
-        
+
         # Apply circuit breaker
         return await self.circuit_breaker.call(
             lambda: with_retry(_make_request, self.retry_config)
         )
-    
+
     async def get(self, url: str, **kwargs) -> Any:
         return await self.request("GET", url, **kwargs)
-    
+
     async def post(self, url: str, **kwargs) -> Any:
         return await self.request("POST", url, **kwargs)
 
 
 # Pre-configured clients for Luna and Aqua
-_luna_client: Optional[ResilientClient] = None
-_aqua_client: Optional[ResilientClient] = None
+_luna_client: ResilientClient | None = None
+_aqua_client: ResilientClient | None = None
 
 
 def get_luna_resilient_client(
@@ -288,19 +290,18 @@ async def delegate_to_luna(
 ) -> Any:
     """
     Delegate a task to Luna with full resilience.
-    
+
     This is the main entry point for Emma to delegate tasks to Luna.
     """
-    from core.observability import get_metrics, MetricNames, trace_span
-    
+
     client = get_luna_resilient_client()
     metrics = get_metrics()
-    
+
     delegation_id = __import__('uuid').uuid4().hex[:16]
-    
+
     with trace_span("emma", "delegation", tags={"target": "luna", "delegation_id": delegation_id}):
         metrics.increment(MetricNames.DELEGATION_STARTED, labels={"target": "luna", "type": task_type})
-        
+
         try:
             # Build delegation payload
             payload = {
@@ -311,22 +312,22 @@ async def delegate_to_luna(
                 "constraints": constraints or {},
                 "stream": stream,
             }
-            
+
             if stream:
                 # For streaming, we'd use WebSocket - for now return acceptance
                 metrics.increment(MetricNames.DELEGATION_COMPLETED, labels={"target": "luna", "mode": "ws"})
                 return {"status": "accepted", "delegation_id": delegation_id}
-            
+
             # HTTP delegation with circuit breaker and retry
             with trace_span("emma", "delegation_http", tags={"target": "luna", "delegation_id": delegation_id}):
                 result = await client.post(
                     "http://localhost:8701/api/delegate",
                     json=payload,
                 )
-            
+
             metrics.increment(MetricNames.DELEGATION_COMPLETED, labels={"target": "luna"})
             return result
-            
-        except Exception as e:
+
+        except Exception:
             metrics.increment(MetricNames.DELEGATION_FAILED, labels={"target": "luna"})
             raise

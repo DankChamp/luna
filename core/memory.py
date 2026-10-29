@@ -1,12 +1,12 @@
 from __future__ import annotations
+
+import contextlib
 import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
-from core.paths import data_home
-
+from core import data_home
 
 MEMORY_DIR = data_home() / "memory"
 
@@ -25,10 +25,8 @@ class MemoryStore:
 
     def _load(self):
         if self._path.exists():
-            try:
+            with contextlib.suppress(Exception):
                 self._data = json.loads(self._path.read_text(encoding="utf-8"))
-            except Exception:
-                pass
 
     def _save(self):
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -49,14 +47,14 @@ class MemoryStore:
         self._data["preferences"][key] = value
         self._save()
 
-    def get_preference(self, key: str) -> Optional[str]:
+    def get_preference(self, key: str) -> str | None:
         return self._data["preferences"].get(key)
 
     def set_project_state(self, key: str, value: str):
         self._data["project_state"][key] = value
         self._save()
 
-    def get_project_state(self, key: str) -> Optional[str]:
+    def get_project_state(self, key: str) -> str | None:
         return self._data["project_state"].get(key)
 
     def extract_facts(self, text: str) -> list[str]:

@@ -1,15 +1,15 @@
 from __future__ import annotations
-from typing import Optional, Any, Literal
+
 from dataclasses import dataclass
+from typing import Literal
 
-from tools.registry import ToolDef
-from core.errors import ToolError
-
-import anyio
 from prompt_toolkit import PromptSession
-from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.validation import Validator, ValidationError
 from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.validation import Validator
+
+from core.errors import ToolError
+from tools.registry import ToolDef
 
 
 @dataclass
@@ -103,21 +103,21 @@ class QuestionPrompter:
             answer = answer.strip()
             if not answer:
                 return QuestionResult(answer=str(default + 1))
-            
+
             try:
                 idx = int(answer) - 1
                 if 0 <= idx < len(choices):
                     return QuestionResult(answer=str(idx + 1))
             except ValueError:
                 pass
-            
+
             # Try matching by text
             for i, choice in enumerate(choices):
                 if choice.lower() == answer.lower():
                     return QuestionResult(answer=str(i + 1))
-            
+
             return QuestionResult(answer=str(default + 1))
-            
+
         except (KeyboardInterrupt, EOFError):
             return QuestionResult(answer="", cancelled=True)
 
@@ -153,14 +153,14 @@ def create_question_tool() -> ToolDef:
     ) -> str:
         """
         Ask an interactive question to the user.
-        
+
         Args:
             prompt: The question to ask
             type: Question type - 'text', 'confirm', 'choice', 'multiline'
             default: Default value (string for text/multiline, bool for confirm, int index for choice)
             choices: List of choices (for 'choice' type)
             validate: Validation regex pattern (for 'text' type)
-            
+
         Returns:
             The user's answer
         """
@@ -169,8 +169,9 @@ def create_question_tool() -> ToolDef:
             if validate:
                 import re
                 pattern = re.compile(validate)
-                validate_func = lambda x: bool(pattern.match(x))
-            
+                def validate_func(x):
+                    return bool(pattern.match(x))
+
             result = await _question_prompter.ask_text(
                 prompt,
                 default=str(default),
@@ -191,7 +192,7 @@ def create_question_tool() -> ToolDef:
         elif type == "choice":
             if not choices:
                 raise ToolError("Choices required for choice type", "question")
-            
+
             default_idx = int(default) if isinstance(default, int) else 0
             result = await _question_prompter.ask_choice(prompt, choices, default_idx)
             if result.cancelled:

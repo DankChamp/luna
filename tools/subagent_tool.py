@@ -1,14 +1,13 @@
 from __future__ import annotations
-from typing import Any, Optional
+
 from dataclasses import dataclass, field
+from typing import Any
 
-from tools.registry import ToolDef, ToolRegistry
-from core.subagents import SubagentManager
-from core.router import AIRouter
-from core.general_subagent import GeneralSubagentManager, TaskDelegation
 from core.errors import SubagentError, ToolError
-
-import anyio
+from core.general_subagent import GeneralSubagentManager, TaskDelegation
+from core.router import AIRouter
+from core.subagents import SubagentManager
+from tools.registry import ToolDef
 
 
 @dataclass
@@ -29,7 +28,7 @@ def create_task_tool(
     model_overrides: dict[str, str] | None = None,
 ) -> ToolDef:
     """Create the task tool for delegating to subagents."""
-    
+
     general_manager = GeneralSubagentManager(router, parent_tools)
 
     async def task(
@@ -42,7 +41,7 @@ def create_task_tool(
     ) -> str:
         """
         Delegate a task to a subagent.
-        
+
         Args:
             prompt: The task description/prompt for the subagent
             agent: Subagent name (default: "general")
@@ -50,7 +49,7 @@ def create_task_tool(
             allowed_tools: List of allowed tool names
             blocked_tools: List of blocked tool names
             system_prompt: Custom system prompt for the subagent
-            
+
         Returns:
             The subagent's response
         """
@@ -58,28 +57,28 @@ def create_task_tool(
             # Check if it's a known subagent
             if agent != "general" and subagent_manager.get(agent):
                 subagent = subagent_manager.get(agent)
-                provider = await router.get_provider(model)
-                
+                await router.get_provider(model)
+
                 # Get tools for this subagent
                 tool_defs = subagent.get_tools(allowed_tools)
-                
+
                 # Build messages
                 system_prompt_text = subagent.build_system_prompt()
                 if system_prompt:
                     system_prompt_text += f"\n\n{system_prompt}"
-                
+
                 messages = [
                     {"role": "system", "content": system_prompt_text},
                     {"role": "user", "content": prompt},
                 ]
-                
+
                 full_text = ""
                 async for event in router.get_provider().complete(messages, tool_defs):
                     if hasattr(event, 'text') and event.text:
                         full_text += event.text
-                
+
                 return full_text
-            
+
             # General subagent
             delegation = TaskDelegation(
                 name=agent,
@@ -89,14 +88,14 @@ def create_task_tool(
                 blocked_tools=blocked_tools or ["todowrite"],
                 system_prompt=system_prompt,
             )
-            
+
             result = await general_manager.run_delegation(delegation)
-            
+
             if not result.success:
                 raise SubagentError(f"Subagent '{agent}' failed: {result.error}", agent)
-            
+
             return result.output
-            
+
         except Exception as e:
             if isinstance(e, SubagentError):
                 raise
@@ -154,7 +153,7 @@ def create_subagent_tool(
         agents = subagent_manager.list_subagents()
         if not agents:
             return "No subagents available."
-        
+
         result = ["Available subagents:"]
         for name in agents:
             subagent = subagent_manager.get(name)
@@ -172,21 +171,21 @@ def create_subagent_tool(
         subagent = subagent_manager.get(name)
         if not subagent:
             return f"Subagent '{name}' not found"
-        
+
         provider = await router.get_provider(model)
         tool_defs = subagent.get_tools()
-        
+
         system_prompt = subagent.build_system_prompt()
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ]
-        
+
         full_text = ""
         async for event in provider.complete(messages, tool_defs):
             if hasattr(event, 'text') and event.text:
                 full_text += event.text
-        
+
         return full_text
 
     return ToolDef(
@@ -213,7 +212,7 @@ def create_subagent_tool(
         },
         required=["action"],
         handler=lambda action, **kwargs: (
-            list_subagents() if action == "list" 
+            list_subagents() if action == "list"
             else run_subagent(name=kwargs.get("name", ""), prompt=kwargs.get("prompt", ""), model=kwargs.get("model"))
         ),
     )

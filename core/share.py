@@ -1,8 +1,6 @@
 from __future__ import annotations
-import json
+
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional
 
 
 def format_session(messages: list[dict], title: str = "Luna Session") -> str:
@@ -41,7 +39,7 @@ def format_session(messages: list[dict], title: str = "Luna Session") -> str:
     return "\n".join(lines)
 
 
-async def paste_to_ix(text: str) -> Optional[str]:
+async def paste_to_ix(text: str) -> str | None:
     import httpx
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from core.orchestrator import Orchestrator
+
 from .registry import ToolDef
 
 
 def create_orchestrator_tool(orch: Orchestrator) -> ToolDef:
     async def orchestrate(plan: str) -> str:
-        results = await orch.execute(plan)
+        await orch.execute(plan)
         return orch.status_report()
 
     return ToolDef(

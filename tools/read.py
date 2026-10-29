@@ -1,7 +1,7 @@
 from __future__ import annotations
-from pathlib import Path
 
-from core.paths import validate_path_within_workspace
+from core import validate_path_within_workspace
+
 from .registry import ToolDef
 
 

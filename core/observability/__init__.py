@@ -1,28 +1,35 @@
 """
 Luna-specific observability setup.
 """
-from .logging import setup_logging, get_logger, LogContext
-from .metrics import get_metrics, MetricNames
-from .tracing import get_tracer, trace_span
+from .logging import LogContext, get_logger, setup_logging
+from .metrics import MetricNames, get_metrics
+from .multi_turn import (
+    DelegationManager,
+    DelegationSession,
+    delegate_turn,
+    get_delegation_manager,
+)
 from .resilience import (
     CircuitBreaker,
     CircuitBreakerConfig,
-    CircuitState,
     CircuitBreakerOpenError,
-    RetryConfig,
-    with_retry,
+    CircuitState,
     ResilientClient,
-    get_luna_resilient_client,
-    get_aqua_resilient_client,
+    RetryConfig,
     delegate_to_luna,
+    get_aqua_resilient_client,
+    get_luna_resilient_client,
+    with_retry,
 )
-from .multi_turn import (
-    DelegationSession,
-    DelegationManager,
-    get_delegation_manager,
-    delegate_turn,
+from .telemetry import (
+    LunaMetrics,
+    TelemetryConfig,
+    TelemetryManager,
+    get_telemetry_manager,
+    init_telemetry,
 )
-from .telemetry import TelemetryManager, TelemetryConfig, LunaMetrics, get_telemetry_manager, init_telemetry
+from .tracing import get_tracer, trace_span
+
 
 # Initialize Luna observability
 def init_observability(level: str = "INFO", json_format: bool = True):

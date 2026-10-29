@@ -1,45 +1,30 @@
 from __future__ import annotations
+
 import asyncio
+import contextlib
 import os
 import re
-import sys
-import time
 from dataclasses import dataclass
-from typing import Callable, Awaitable, Optional
 
-from rich.console import Console
-from rich.markdown import Markdown
-from rich.panel import Panel
-from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application
-from prompt_toolkit.application.current import get_app
-from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.clipboard import ClipboardData
 from prompt_toolkit.clipboard.pyperclip import PyperclipClipboard
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.layout import Layout, HSplit, VSplit, Window, Float, FloatContainer
-from prompt_toolkit.layout.menus import CompletionsMenu
-from prompt_toolkit.layout.controls import FormattedTextControl
-from prompt_toolkit.styles import Style as PTKStyle, DynamicStyle
 from prompt_toolkit.completion import ThreadedCompleter
-from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.filters import Condition, has_selection
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout import Float, FloatContainer, HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.containers import ConditionalContainer
+from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout.menus import CompletionsMenu
+from prompt_toolkit.styles import DynamicStyle
+from prompt_toolkit.styles import Style as PTKStyle
 from prompt_toolkit.widgets import TextArea
+from rich.console import Console
 
-from ui.completer import LunaCompleter
-from ui.theme import Neon
-from ui.banner import make_welcome_panel
-from ui.provider_panel import show_provider_panel
-from core import paths
 from core.agent_core import AgentCore
-from core.tool_executor import ToolExecutor
-from core.skill_engine import SkillEngine
-from core.subagent_engine import SubagentEngine
 from session.manager import SessionManager
-from bridge.client import EmmaBridge
-from core.persona import load_luna_persona
-
+from ui.completer import LunaCompleter
+from ui.provider_panel import show_provider_panel
+from ui.theme import Neon
 
 console = Console()
 
@@ -47,37 +32,39 @@ console = Console()
 @dataclass
 class LunaAppConfig:
     """Configuration for LunaApp."""
-    persona: Optional[str] = None
-    command_loader: Optional[object] = None
-    theme_mgr: Optional[object] = None
-    ref_mgr: Optional[object] = None
-    keybinds: Optional[dict] = None
+    persona: str | None = None
+    command_loader: object | None = None
+    theme_mgr: object | None = None
+    ref_mgr: object | None = None
+    keybinds: dict | None = None
     session_dir: str = "~/.luna/sessions"
-    router: Optional[object] = None
-    agent_core: Optional[AgentCore] = None
-    subagents: Optional[object] = None
-    skills: Optional[object] = None
-    memory: Optional[object] = None
+    router: object | None = None
+    agent_core: AgentCore | None = None
+    subagents: object | None = None
+    skills: object | None = None
+    memory: object | None = None
+    minimal: bool = False
 
 
 class LunaApp:
     """
     Luna's REPL application - UI layout, keybinds, rendering.
-    
+
     Extracted from luna.py to separate UI concerns from agent logic.
     """
-    
+
     def __init__(self, config: LunaAppConfig):
         self.config = config
         self.session_mgr = SessionManager(config.session_dir)
         self.agent_core = config.agent_core
-        
+        self.minimal = config.minimal
+
         # UI state
         self._output_buffer: list[tuple[str, str]] = []
         self._app: Application | None = None
         self.sidebar_visible = True
         self._sidebar_cache = {"branch": "", "sid": None, "tokens": 0}
-        
+
         # Command handling
         self.command_loader = config.command_loader
         self.subagents = config.subagents
@@ -85,30 +72,30 @@ class LunaApp:
         self.memory = config.memory
         self.AT_MENTION_RE = re.compile(r"@(\w[\w-]*)\s+(.*)")
         self._ansi_re = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
-        
+
         # Mode indicators
-        from core.modes import AgentMode, MODE_INDICATORS
+        from core.modes import MODE_INDICATORS, AgentMode
         self.MODE_INDICATORS = MODE_INDICATORS
         self.AgentMode = AgentMode
-        
+
         # Key bindings
         self._keybinds = config.keybinds or {}
         self._accept_lock = asyncio.Lock()
-        
+
         # Delegation handling
         self._delegation_mode = False
         self._delegation_buffer: list[str] = []
-    
+
     def _prompt_text(self) -> list[tuple[str, str]]:
         """Generate prompt with mode indicator."""
         info = self.MODE_INDICATORS.get(self.agent_core.config.mode, self.MODE_INDICATORS[self.AgentMode.BUILD])
         mc = info["color"]
         return [(f"bold {mc}", f"{info['icon']} "), (mc, "��� ")]
-    
+
     def _header_text(self) -> list[tuple[str, str]]:
         """Generate header text."""
         from session.context import count_messages_tokens, get_context_limit
-        
+
         project = os.path.basename(os.getcwd())
         sid = self.session_mgr.current
         info = self.MODE_INDICATORS.get(self.agent_core.config.mode, self.MODE_INDICATORS[self.AgentMode.BUILD])
@@ -116,7 +103,7 @@ class LunaApp:
         tokens = count_messages_tokens(self.agent_core.messages)
         limit = get_context_limit(self.agent_core._get_provider_name())
         model_name = self.agent_core.router.active_name or "?"
-        
+
         parts = [
             ("bold " + Neon.primary, " �� Luna "),
             (f"bold {mc}", f"{info['icon']} {info['label']} "),
@@ -128,26 +115,27 @@ class LunaApp:
         pct = f"{tokens}/{limit}" if limit else str(tokens)
         parts.append((Neon.dim, f" {pct}"))
         return parts
-    
+
     def _sep_top_style(self) -> str:
         info = self.MODE_INDICATORS.get(self.agent_core.config.mode, self.MODE_INDICATORS[self.AgentMode.BUILD])
         return f"fg:{info['color']} bg:#0d0d1a"
-    
+
     def _sidebar_text(self) -> str:
         """Generate sidebar text with caching."""
-        from ui.sidebar import build_sidebar_text
         from session.context import count_messages_tokens, get_context_limit
-        
+        from ui.sidebar import build_sidebar_text
+
         project = os.path.basename(os.getcwd())
         sid = self.session_mgr.current
         tokens = count_messages_tokens(self.agent_core.messages)
         limit = get_context_limit(self.agent_core._get_provider_name())
-        
+
         # Get todos
         ts = getattr(self.agent_core, 'todos', None)
         todos = ts.list() if ts else []
-        
+
         # Update branch cache
+        branch = self._sidebar_cache.get("branch", "") or ""
         if self._sidebar_cache["sid"] != sid or abs(self._sidebar_cache["tokens"] - tokens) > 100:
             self._sidebar_cache["sid"] = sid
             self._sidebar_cache["tokens"] = tokens
@@ -161,7 +149,7 @@ class LunaApp:
                 branch = ""
 
         return build_sidebar_text(project, sid, tokens, limit, todos, branch)
-    
+
     def _sep_vert_style(self) -> str:
         info = self.MODE_INDICATORS.get(self.agent_core.config.mode, self.MODE_INDICATORS[self.AgentMode.BUILD])
         return f"fg:{info['color']} bg:#0d0d1a"
@@ -176,23 +164,19 @@ class LunaApp:
                     self._app.invalidate()
         except Exception:
             pass
-    
+
     def _build_layout(self):
         """Build the prompt-toolkit layout."""
-        from prompt_toolkit.layout import Window, HSplit, VSplit
-        from prompt_toolkit.layout.controls import FormattedTextControl
-        from prompt_toolkit.layout.containers import ConditionalContainer
-        from prompt_toolkit.filters import Condition
-        
+
         # Header
         header_win = Window(
             content=FormattedTextControl(self._header_text),
             height=1,
             style="bg:#0d0d1a",
         )
-        
+
         sep_top = Window(height=1, char="\u2500", style=self._sep_top_style)
-        
+
         # Sidebar
         sidebar_win = Window(
             content=FormattedTextControl(self._sidebar_text),
@@ -200,24 +184,24 @@ class LunaApp:
             style="bg:#1a1a2e",
             wrap_lines=False,
         )
-        
+
         sep_vert = Window(
             width=1,
             char="\u2502",
             style=self._sep_vert_style,
         )
-        
+
         sidebar_group = ConditionalContainer(
             VSplit([sep_vert, sidebar_win]),
             filter=Condition(lambda: self.sidebar_visible),
         )
-        
+
         # Output area
         out_ctrl = FormattedTextControl(lambda: self._output_buffer)
         out_win = Window(content=out_ctrl, wrap_lines=True)
-        
+
         sep_bot = Window(height=1, char="\u2500", style="fg:#444466 bg:#0d0d1a")
-        
+
         # Input area
         completer = ThreadedCompleter(LunaCompleter(
             subagent_manager=self.subagents,
@@ -226,7 +210,7 @@ class LunaApp:
             ref_mgr=self.config.ref_mgr,
             router=self.config.router,
         ))
-        
+
         input_field = TextArea(
             height=1,
             prompt=self._prompt_text,
@@ -234,7 +218,7 @@ class LunaApp:
             complete_while_typing=True,
             multiline=False,
         )
-        
+
         # Build layout
         body = HSplit([
             header_win,
@@ -247,7 +231,7 @@ class LunaApp:
             Window(content=FormattedTextControl(lambda: [("fg:#666", " ")]), height=1),
             input_field,
         ])
-        
+
         # Float for completions menu
         float_container = FloatContainer(
             content=body,
@@ -259,53 +243,57 @@ class LunaApp:
                 ),
             ],
         )
-        
+
         return Layout(float_container)
-    
+
     def _build_keybindings(self) -> KeyBindings:
         """Build key bindings."""
         kb = KeyBindings()
-        
+
         # Basic keys
         @kb.add("c-c")
         def _(event):
             event.app.exit()
-        
+
         @kb.add("c-l")
         def _(event):
             event.app.invalidate()
-        
+
         # Clipboard: Ctrl+Shift+C to copy, Ctrl+Shift+V to paste
         @kb.add("c-c", filter=has_selection)
         def _(event):
             event.app.current_buffer.copy_to_clipboard()
-        
+
         @kb.add("c-v")
         def _(event):
             event.app.current_buffer.paste_from_clipboard()
-        
+
         @kb.add("c-insert")
         def _(event):
             event.app.current_buffer.copy_to_clipboard()
-        
+
         @kb.add("s-insert")
         def _(event):
             event.app.current_buffer.paste_from_clipboard()
-        
+
         # Sidebar toggle
         @kb.add("f1")
         def _(event):
             self.sidebar_visible = not self.sidebar_visible
             event.app.invalidate()
-        
+
         # Provider panel
         @kb.add("f2")
         def _(event):
-            if self.config.theme_mgr and self.config.router:
+            if self.config.router:
+                from prompt_toolkit import PromptSession
+                from rich.console import Console
+                session = PromptSession()
+                console = Console()
                 asyncio.create_task(show_provider_panel(
-                    self.config.theme_mgr, self.config.router, self.config.provider_panel_callback
+                    self.config.router, console, session
                 ))
-        
+
         # Accept handler
         @kb.add("enter")
         def _(event):
@@ -313,26 +301,25 @@ class LunaApp:
             text = buf.text.strip()
             if not text:
                 return
-            
+
             # Check for slash command or @mention
             if text.startswith("/") or text.startswith("@"):
                 event.app.create_background_task(self._accept_impl(text))
                 buf.reset()
                 return
-            
+
             # Regular message
             event.app.create_background_task(self._accept_impl(text))
             buf.reset()
-        
+
         return kb
-    
+
     def _build_style(self) -> DynamicStyle:
         """Build dynamic style based on mode."""
-        from prompt_toolkit.styles import Style as PTKStyle
-        
+
         info = self.MODE_INDICATORS.get(self.agent_core.config.mode, self.MODE_INDICATORS[self.AgentMode.BUILD])
         mc = info["color"]
-        
+
         style_dict = {
             "completion-menu.completion": "bg:#1a1a2e fg:#e0e0e0",
             "completion-menu.completion.current": f"bg:{mc} fg:#0d0d1a",
@@ -340,11 +327,11 @@ class LunaApp:
             "completion-menu.meta.completion.current": f"fg:{mc}",
             "scrollbar.background": "bg:#1a1a2e",
             "scrollbar.button": f"bg:{mc}",
-            "text-area.focused": f"bg:#1a1a2e",
+            "text-area.focused": "bg:#1a1a2e",
         }
-        
+
         return DynamicStyle(lambda: PTKStyle.from_dict(style_dict))
-    
+
     async def _accept_impl(self, text: str):
         """Process user input (slash commands, @mentions, regular messages)."""
         async with self._accept_lock:
@@ -354,12 +341,12 @@ class LunaApp:
                 if at_match:
                     aname = at_match.group(1)
                     rest = at_match.group(2)
-                    
+
                     # Check subagent
                     if self.config.subagents and self.config.subagents.get(aname):
                         await self._run_subagent(aname, rest or "Continue")
                         return
-                    
+
                     # Check reference
                     if self.config.ref_mgr and self.config.ref_mgr.get(aname):
                         content = self.config.ref_mgr.read(aname, rest or "")
@@ -368,26 +355,26 @@ class LunaApp:
                             if self._app:
                                 self._app.invalidate()
                         return
-                
+
                 # Handle slash commands
                 if text.startswith("/"):
                     await self._handle_slash_command(text)
                     return
-                
+
                 # Regular message - process through agent
                 await self._process_message(text)
-                
+
             except Exception as e:
                 self._output_buffer.append((f"fg:{Neon.error}", f"\nError: {e}\n"))
                 if self._app:
                     self._app.invalidate()
-    
+
     async def _handle_slash_command(self, cmd: str) -> bool:
         """Handle slash commands."""
         parts = cmd[1:].split(" ", 1)
         cmd_name = parts[0]
         cmd_args = parts[1] if len(parts) > 1 else ""
-        
+
         if cmd_name in ("help", "h"):
             await self._show_help()
             return True
@@ -419,8 +406,12 @@ class LunaApp:
             await self._handle_reference_command(cmd_args)
             return True
         elif cmd_name == "provider":
-            if self.config.theme_mgr and self.config.router:
-                await show_provider_panel(self.config.theme_mgr, self.config.router, self.config.provider_panel_callback)
+            if self.config.router:
+                from prompt_toolkit import PromptSession
+                from rich.console import Console
+                session = PromptSession()
+                console = Console()
+                await show_provider_panel(self.config.router, console, session)
             return True
         elif cmd_name == "todo":
             await self._handle_todo_command(cmd_args)
@@ -438,7 +429,7 @@ class LunaApp:
         elif cmd_name == "memory":
             await self._handle_memory(cmd_args)
             return True
-        
+
         # Check custom commands
         if self.config.command_loader and self.config.command_loader.get(cmd_name):
             custom = self.config.command_loader.get(cmd_name)
@@ -447,25 +438,25 @@ class LunaApp:
                 self._output_buffer.append((f"fg:{Neon.dim}", f"\n→ running /{custom.name}...\n"))
                 await self._process_message(expanded)
             return True
-        
+
         # Unknown command
         self._output_buffer.append((f"fg:{Neon.error}", f"\nUnknown command: /{cmd_name}\n"))
         return True
-    
+
     async def _process_message(self, line: str) -> str | None:
         """Process a regular message through the agent."""
         # Mark session dirty for debounced save
         self.session_mgr.mark_dirty()
-        
+
         buf = self._output_buffer
         app = self._app
         mode_info = self.MODE_INDICATORS.get(self.agent_core.config.mode, self.MODE_INDICATORS[self.AgentMode.BUILD])
         mc = mode_info["color"]
-        
+
         buf.append((f"bold {mc}", f"◆ {line}\n"))
         if app:
             app.invalidate()
-        
+
         full_text = ""
         in_response = False
         async for event in self.agent_core.run(line):
@@ -477,38 +468,36 @@ class LunaApp:
                 buf.append(("", event.text))
                 if app:
                     app.invalidate()
-            
+
             elif hasattr(event, 'name'):  # ToolExecStart
                 args_str = self._fmt_tool_args(event.arguments)
-                buf.append((f"fg:{Neon.warning}", f"\n  \u26a1 "))
+                buf.append((f"fg:{Neon.warning}", "\n  \u26a1 "))
                 buf.append((f"fg:{Neon.secondary}", event.name))
                 buf.append((f"fg:{Neon.dim}", f"({args_str})"))
                 if app:
                     app.invalidate()
-            
+
             elif isinstance(event, str):
                 full_text = event
-        
+
         if full_text:
             buf.append(("", "\n"))
-        
+
         # Flush session save
-        try:
+        with contextlib.suppress(Exception):
             await self.session_mgr.flush(self.agent_core.messages)
-        except Exception:
-            pass
-        
+
         # Auto-suggest skills
         if self.skills:
             self._auto_suggest_skill()
-        
+
         # Extract facts
         if self.memory:
             for fact in self.memory.extract_facts(line):
                 self.memory.add_fact(fact, source="auto-extract")
-        
+
         return full_text if full_text else None
-    
+
     def _fmt_tool_args(self, args: dict) -> str:
         """Format tool arguments for display."""
         if not args:
@@ -520,14 +509,18 @@ class LunaApp:
                 s = s[:40] + "..."
             parts.append(f"{k}={s}")
         return ", ".join(parts)
-    
+
     async def run(self):
         """Run the Luna application."""
+        if self.minimal:
+            await self._run_minimal()
+            return
+
         # Initialize UI
         layout = self._build_layout()
         kb = self._build_keybindings()
         style = self._build_style()
-        
+
         self._app = Application(
             layout=layout,
             key_bindings=kb,
@@ -536,7 +529,7 @@ class LunaApp:
             mouse_support=True,
             clipboard=PyperclipClipboard(),
         )
-        
+
         # Show welcome
         self._output_buffer.append((Neon.primary, "  \u2726 Luna — your coder\n"))
         if self.config.command_loader:
@@ -545,10 +538,43 @@ class LunaApp:
                 names = [c.name for c in cmd_list[:6]]
                 self._output_buffer.append((Neon.dim, f"  Commands: /{'  /'.join(names)}\n"))
         self._output_buffer.append(("", "\n"))
-        
+
         # Run
         await self._app.run_async()
-    
+
+    async def _run_minimal(self):
+        """Run minimal UI (plain input loop)."""
+
+        while True:
+            try:
+                user = input("◆ ").strip()
+                if not user:
+                    continue
+                if user in ("/exit", "/quit"):
+                    break
+                if user == "/help":
+                    continue
+                if user == "/clear":
+                    self.agent_core.reset()
+                    continue
+                if user.startswith("/mode"):
+                    parts = user.split()
+                    if len(parts) > 1 and parts[1] in ("build", "plan"):
+                        from core.modes import AgentMode
+                        self.agent_core.set_mode(AgentMode(parts[1]))
+                    else:
+                        pass
+                    continue
+
+                async for event in self.agent_core.run(user):
+                    if hasattr(event, 'text') or isinstance(event, str):
+                        pass
+
+            except (KeyboardInterrupt, EOFError):
+                break
+            except Exception:
+                pass
+
     async def _show_help(self):
         self._output_buffer.append((Neon.dim, "\nAvailable commands:\n"))
         self._output_buffer.append((Neon.dim, "  /help, /h       - Show this help\n"))
@@ -574,7 +600,7 @@ class LunaApp:
         self._output_buffer.append(("", "\n"))
         if self._app:
             self._app.invalidate()
-    
+
     async def _handle_mode_command(self, args: str):
         from core.modes import AgentMode
         if not args:
@@ -589,7 +615,7 @@ class LunaApp:
             self._output_buffer.append((Neon.error, f"\nInvalid mode: {args}. Use 'build' or 'plan'\n"))
         if self._app:
             self._app.invalidate()
-    
+
     async def _handle_model_command(self, args: str):
         if not args:
             current = self.agent_core.router.active_model
@@ -600,7 +626,7 @@ class LunaApp:
                 for m in models[:20]:
                     self._output_buffer.append((Neon.dim, f"  {m}\n"))
             return
-        
+
         if args == "cycle":
             model = await self.agent_core.router.cycle_model()
             if model:
@@ -615,12 +641,12 @@ class LunaApp:
                 self._output_buffer.append((Neon.error, f"\nFailed to set model: {e}\n"))
         if self._app:
             self._app.invalidate()
-    
+
     async def _handle_session_command(self, args: str):
         parts = args.split(" ", 1)
         subcmd = parts[0] if parts else "list"
         subargs = parts[1] if len(parts) > 1 else ""
-        
+
         if subcmd in ("list", "ls"):
             sessions = await self.session_mgr.list_sessions()
             if not sessions:
@@ -630,12 +656,12 @@ class LunaApp:
                 for s in sessions[:20]:
                     current = " *" if s["id"] == self.session_mgr.current else ""
                     self._output_buffer.append((Neon.dim, f"  {s['id'][:8]} {s['updated'][:19]} {s['message_count']} msgs {s['preview']}{current}\n"))
-        
+
         elif subcmd in ("new", "n"):
             await self.session_mgr.new()
             self.agent_core.reset()
             self._output_buffer.append((Neon.ok, "\nNew session created\n"))
-        
+
         elif subcmd in ("load", "l"):
             if not subargs:
                 self._output_buffer.append((Neon.error, "\nUsage: /session load <id>\n"))
@@ -645,7 +671,7 @@ class LunaApp:
                 self._output_buffer.append((Neon.ok, f"\nLoaded session: {subargs}\n"))
             else:
                 self._output_buffer.append((Neon.error, f"\nSession not found: {subargs}\n"))
-        
+
         elif subcmd in ("delete", "rm"):
             if not subargs:
                 self._output_buffer.append((Neon.error, "\nUsage: /session delete <id>\n"))
@@ -655,29 +681,29 @@ class LunaApp:
                 self._output_buffer.append((Neon.ok, f"\nDeleted session: {subargs}\n"))
             else:
                 self._output_buffer.append((Neon.error, f"\nFailed to delete: {subargs}\n"))
-        
+
         elif subcmd in ("save", "s"):
             try:
                 sid = await self.session_mgr.save(self.agent_core.messages, debounce=False)
                 self._output_buffer.append((Neon.ok, f"\nSession saved: {sid}\n"))
             except Exception as e:
                 self._output_buffer.append((Neon.error, f"\nFailed to save session: {e}\n"))
-        
+
         else:
             self._output_buffer.append((Neon.error, f"\nUnknown session command: {subcmd}\n"))
-        
+
         if self._app:
             self._app.invalidate()
-    
+
     async def _handle_skill_command(self, args: str):
         parts = args.split(" ", 1)
         subcmd = parts[0] if parts else "list"
         subargs = parts[1] if len(parts) > 1 else ""
-        
+
         if not self.skills:
             self._output_buffer.append((Neon.error, "\nSkills not available\n"))
             return
-        
+
         if subcmd in ("list", "ls"):
             skills = self.skills.list_skills()
             if not skills:
@@ -689,7 +715,7 @@ class LunaApp:
                     skill_obj = self.skills.get(s)
                     desc = skill_obj.description[:60] if skill_obj else ""
                     self._output_buffer.append((Neon.dim, f"  {s}{active} - {desc}\n"))
-        
+
         elif subcmd in ("activate", "on", "enable"):
             if not subargs:
                 self._output_buffer.append((Neon.error, "\nUsage: /skill activate <name>\n"))
@@ -698,29 +724,29 @@ class LunaApp:
                 self._output_buffer.append((Neon.ok, f"\nSkill activated: {subargs}\n"))
             else:
                 self._output_buffer.append((Neon.error, f"\nSkill not found: {subargs}\n"))
-        
+
         elif subcmd in ("deactivate", "off", "disable"):
             if not subargs:
                 self._output_buffer.append((Neon.error, "\nUsage: /skill deactivate <name>\n"))
                 return
             self.skills.deactivate(subargs)
             self._output_buffer.append((Neon.ok, f"\nSkill deactivated: {subargs}\n"))
-        
+
         else:
             self._output_buffer.append((Neon.error, f"\nUnknown skill command: {subcmd}\n"))
-        
+
         if self._app:
             self._app.invalidate()
-    
+
     async def _handle_subagent_command(self, args: str):
         parts = args.split(" ", 1)
         subcmd = parts[0] if parts else "list"
-        subargs = parts[1] if len(parts) > 1 else ""
-        
+        parts[1] if len(parts) > 1 else ""
+
         if not self.subagents:
             self._output_buffer.append((Neon.error, "\nSubagents not available\n"))
             return
-        
+
         if subcmd in ("list", "ls"):
             agents = self.subagents.list_subagents()
             if not agents:
@@ -731,22 +757,22 @@ class LunaApp:
                     sa = self.subagents.get(a)
                     desc = sa.description[:60] if sa else ""
                     self._output_buffer.append((Neon.dim, f"  @{a} - {desc}\n"))
-        
+
         else:
             self._output_buffer.append((Neon.error, f"\nUnknown subagent command: {subcmd}\n"))
-        
+
         if self._app:
             self._app.invalidate()
-    
+
     async def _handle_reference_command(self, args: str):
         parts = args.split(" ", 1)
         subcmd = parts[0] if parts else "list"
-        subargs = parts[1] if len(parts) > 1 else ""
-        
+        parts[1] if len(parts) > 1 else ""
+
         if not self.config.ref_mgr:
             self._output_buffer.append((Neon.error, "\nReferences not available\n"))
             return
-        
+
         if subcmd in ("list", "ls"):
             refs = self.config.ref_mgr.list()
             if not refs:
@@ -755,23 +781,23 @@ class LunaApp:
                 self._output_buffer.append((Neon.dim, "\nAvailable references:\n"))
                 for r in refs:
                     self._output_buffer.append((Neon.dim, f"  @{r}\n"))
-        
+
         else:
             self._output_buffer.append((Neon.error, f"\nUnknown reference command: {subcmd}\n"))
-        
+
         if self._app:
             self._app.invalidate()
-    
+
     async def _handle_todo_command(self, args: str):
         parts = args.split(" ", 1)
         subcmd = parts[0] if parts else "list"
         subargs = parts[1] if len(parts) > 1 else ""
-        
+
         todos = getattr(self.agent_core, 'todos', None)
         if not todos:
             self._output_buffer.append((Neon.error, "\nTodos not available\n"))
             return
-        
+
         if subcmd in ("list", "ls", ""):
             items = todos.list()
             if not items:
@@ -781,14 +807,14 @@ class LunaApp:
                 for i, t in enumerate(items):
                     status = "✓" if t.get("done") else "○"
                     self._output_buffer.append((Neon.dim, f"  {i+1}. [{status}] {t['content']}\n"))
-        
+
         elif subcmd in ("add", "a"):
             if not subargs:
                 self._output_buffer.append((Neon.error, "\nUsage: /todo add <content>\n"))
                 return
             todos.add(subargs)
-            self._output_buffer.append((Neon.ok, f"\nTodo added\n"))
-        
+            self._output_buffer.append((Neon.ok, "\nTodo added\n"))
+
         elif subcmd in ("done", "d"):
             if not subargs:
                 self._output_buffer.append((Neon.error, "\nUsage: /todo done <index>\n"))
@@ -796,10 +822,10 @@ class LunaApp:
             try:
                 idx = int(subargs) - 1
                 todos.done(idx)
-                self._output_buffer.append((Neon.ok, f"\nTodo marked done\n"))
+                self._output_buffer.append((Neon.ok, "\nTodo marked done\n"))
             except (ValueError, IndexError):
                 self._output_buffer.append((Neon.error, "\nInvalid index\n"))
-        
+
         elif subcmd in ("remove", "rm"):
             if not subargs:
                 self._output_buffer.append((Neon.error, "\nUsage: /todo remove <index>\n"))
@@ -807,63 +833,63 @@ class LunaApp:
             try:
                 idx = int(subargs) - 1
                 todos.remove(idx)
-                self._output_buffer.append((Neon.ok, f"\nTodo removed\n"))
+                self._output_buffer.append((Neon.ok, "\nTodo removed\n"))
             except (ValueError, IndexError):
                 self._output_buffer.append((Neon.error, "\nInvalid index\n"))
-        
+
         else:
             self._output_buffer.append((Neon.error, f"\nUnknown todo command: {subcmd}\n"))
-        
+
         if self._app:
             self._app.invalidate()
-    
+
     async def _handle_memory(self, args: str):
         parts = args.split(" ", 1)
         subcmd = parts[0] if parts else "show"
         subargs = parts[1] if len(parts) > 1 else ""
-        
+
         if not self.memory:
             self._output_buffer.append((Neon.error, "\nMemory not available\n"))
             return
-        
+
         if subcmd in ("show", "s", ""):
             summary = self.memory.summarize()
             if summary:
                 self._output_buffer.append((Neon.dim, f"\n{summary}\n"))
             else:
                 self._output_buffer.append((Neon.dim, "\nMemory is empty\n"))
-        
+
         elif subcmd in ("add", "a"):
             if not subargs:
                 self._output_buffer.append((Neon.error, "\nUsage: /memory add <fact>\n"))
                 return
             self.memory.add_fact(subargs, source="manual")
             self._output_buffer.append((Neon.ok, "\nFact added to memory\n"))
-        
+
         elif subcmd in ("clear",):
             self.memory.clear()
             self._output_buffer.append((Neon.ok, "\nMemory cleared\n"))
-        
+
         else:
             self._output_buffer.append((Neon.error, f"\nUnknown memory command: {subcmd}\n"))
-        
+
         if self._app:
             self._app.invalidate()
-    
+
     async def _run_subagent(self, name: str, prompt: str):
         if not self.subagents:
             self._output_buffer.append((Neon.error, "\nSubagents not available\n"))
             return
-        
+
         subagent = self.subagents.get(name)
         if not subagent:
             self._output_buffer.append((Neon.error, f"\nSubagent not found: {name}\n"))
             return
-        
+
         self._output_buffer.append((Neon.dim, f"\nDelegating to @{name}...\n"))
         if self._app:
             self._app.invalidate()
-        
+
         try:
             provider = await self.agent_core.router.get_provider()
             from core.subagent_engine import SubagentEngine
@@ -876,10 +902,10 @@ class LunaApp:
                 self._output_buffer.append((Neon.error, f"\nSubagent failed: {result.error}\n"))
         except Exception as e:
             self._output_buffer.append((Neon.error, f"\nSubagent error: {e}\n"))
-        
+
         if self._app:
             self._app.invalidate()
-    
+
     def _auto_suggest_skill(self):
         if not self.skills:
             return

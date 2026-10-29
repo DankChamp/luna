@@ -1,13 +1,18 @@
 from __future__ import annotations
-from pathlib import Path
 
-from core.paths import validate_path_within_workspace
+from core import validate_path_within_workspace
+
 from .registry import ToolDef
 
 
-async def write_file(path: str, content: str) -> str:
+async def write_file(path: str | None = None, content: str = "", filename: str | None = None) -> str:
+    # Support both 'path' and 'filename' for model compatibility
+    file_path = path or filename
+    if not file_path:
+        return "Error: Either 'path' or 'filename' parameter is required"
+    
     try:
-        p = validate_path_within_workspace(path)
+        p = validate_path_within_workspace(file_path)
     except ValueError as e:
         return f"Error: {e}"
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -16,7 +21,7 @@ async def write_file(path: str, content: str) -> str:
         temp_path = p.with_suffix(p.suffix + ".tmp")
         temp_path.write_text(content, encoding="utf-8")
         temp_path.replace(p)
-        return f"Wrote {len(content)} bytes to {path}"
+        return f"Wrote {len(content)} bytes to {file_path}"
     except Exception as e:
         return f"Error writing file: {e}"
 
@@ -29,11 +34,15 @@ write_tool = ToolDef(
             "type": "string",
             "description": "Path to the FILE to write (relative to workspace root)",
         },
+        "filename": {
+            "type": "string",
+            "description": "Alternative parameter name for path (for model compatibility)",
+        },
         "content": {
             "type": "string",
             "description": "Full content to write to the file",
         },
     },
-    required=["path", "content"],
+    required=["content"],
     handler=write_file,
 )

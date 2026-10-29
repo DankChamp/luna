@@ -1,14 +1,13 @@
 from __future__ import annotations
+
 import asyncio
 import os
+import re
 import shlex
 import shutil
-import re
 from pathlib import Path
-from typing import Optional
 
 from .registry import ToolDef
-
 
 # Use bash if available for compatibility with model-generated commands
 _BASH_PATH = shutil.which("bash") or "/bin/sh"
@@ -190,12 +189,10 @@ async def run_command_interactive(
             async for line in proc.stdout:
                 line_str = line.decode("utf-8", errors="replace").rstrip()
                 output_lines.append(line_str)
-                print(line_str)  # Stream to console
 
             async for line in proc.stderr:
                 line_str = line.decode("utf-8", errors="replace").rstrip()
                 output_lines.append(f"[stderr] {line_str}")
-                print(f"[stderr] {line_str}")
 
             await proc.wait()
         except asyncio.TimeoutError:

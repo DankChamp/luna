@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import tiktoken
 
-
 MODEL_CONTEXT_LIMITS: dict[str, int] = {
     "meta/llama-3.1-8b-instruct": 131072,
     "meta/llama-3.1-70b-instruct": 131072,
@@ -35,15 +34,13 @@ def _get_encoder(model: str | None = None) -> tiktoken.Encoding:
     """Get appropriate tiktoken encoder for model."""
     if model and model in _encoder_cache:
         return _encoder_cache[model]
-    
+
     # Map model names to tiktoken encodings
     if model:
         model_lower = model.lower()
         if "gpt-4" in model_lower or "gpt-3.5" in model_lower or "gpt-4o" in model_lower:
             enc = tiktoken.encoding_for_model("gpt-4")
-        elif "claude" in model_lower:
-            enc = tiktoken.get_encoding("cl100k_base")
-        elif "gemini" in model_lower:
+        elif "claude" in model_lower or "gemini" in model_lower:
             enc = tiktoken.get_encoding("cl100k_base")
         elif "llama" in model_lower:
             enc = tiktoken.get_encoding("cl100k_base")  # Best approximation
@@ -51,7 +48,7 @@ def _get_encoder(model: str | None = None) -> tiktoken.Encoding:
             enc = tiktoken.get_encoding("cl100k_base")
     else:
         enc = tiktoken.get_encoding("cl100k_base")
-    
+
     if model:
         _encoder_cache[model] = enc
     return enc

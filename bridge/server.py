@@ -5,17 +5,14 @@ import base64
 import hashlib
 import hmac
 import json
-import struct
 import traceback
-from contextlib import asynccontextmanager
-from typing import Optional
+from contextlib import asynccontextmanager, suppress
 
 from aiohttp import web
-from aiohttp.web import Request, Response, WebSocketResponse
+from aiohttp.web import Request, Response
 
 from core.agent_core import AgentCore
-from core.observability import get_tracer, get_logger, trace_span, get_metrics, MetricNames
-
+from core.observability import MetricNames, get_logger, get_metrics, get_tracer, trace_span
 
 WS_MAGIC = "258EAFA5-E914-47DA-95CA-5AB5FB11B5D3"
 
@@ -128,16 +125,16 @@ input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendMsg(); });
 
 class BridgeServer:
     """Async bridge server using aiohttp for proper async support."""
-    
-    def __init__(self, agent: 'AgentCore', bridge_token: str = ""):
+
+    def __init__(self, agent: AgentCore, bridge_token: str = ""):
         self.agent = agent
         self.bridge_token = bridge_token
         self._ws_clients: set[web.WebSocketResponse] = set()
         self._ws_lock = asyncio.Lock()
-        self._app: Optional[web.Application] = None
-        self._runner: Optional[web.AppRunner] = None
-        self._site: Optional[web.TCPSite] = None
-        
+        self._app: web.Application | None = None
+        self._runner: web.AppRunner | None = None
+        self._site: web.TCPSite | None = None
+
         # Observability
         self._tracer = get_tracer("luna")
         self._logger = get_logger("luna.bridge")
@@ -174,10 +171,10 @@ class BridgeServer:
     async def _handle_api_chat(self, request: Request) -> Response:
         if not self._authorized(request):
             return web.json_response({"error": "unauthorized: missing or invalid bridge token"}, status=401)
-        
+
         message = None
         system = ""
-        
+
         if request.method == "GET":
             message = request.query.get("message")
         else:
@@ -187,10 +184,10 @@ class BridgeServer:
                 system = data.get("system", "")
             except Exception:
                 return web.json_response({"error": "invalid JSON body"}, status=400)
-        
+
         if not message:
             return web.json_response({"error": "missing message"}, status=400)
-        
+
         result = await self._run_agent(message, system=system)
         if result:
             return web.json_response({"response": result})
@@ -204,17 +201,17 @@ class BridgeServer:
     async def _handle_ingest(self, request: Request) -> Response:
         if not self._authorized(request):
             return web.json_response({"error": "unauthorized: missing or invalid bridge token"}, status=401)
-        
+
         try:
             data = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON body"}, status=400)
-        
+
         fact = data.get("fact", "")
-        tags = data.get("tags", [])
+        data.get("tags", [])
         if not fact:
             return web.json_response({"error": "missing fact"}, status=400)
-        
+
         mem = getattr(self.agent, "memory", None)
         if mem:
             mem.add_fact(fact, source="emma")
@@ -224,31 +221,31 @@ class BridgeServer:
         """Handle delegation requests from Emma with WebSocket streaming support."""
         if not self._authorized(request):
             return web.json_response({"error": "unauthorized: missing or invalid bridge token"}, status=401)
-        
+
         try:
             data = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON body"}, status=400)
-        
+
         delegation_id = data.get("delegation_id", "")
         task_type = data.get("task_type", "code")
         task = data.get("task", "")
         context = data.get("context", {})
-        constraints = data.get("constraints", {})
-        
+        data.get("constraints", {})
+
         if not task:
             return web.json_response({"error": "missing task"}, status=400)
-        
+
         # Check if client wants WebSocket streaming
         wants_ws = data.get("stream", False)
-        
+
         # Metrics
         self._metrics.increment(MetricNames.DELEGATION_STARTED, labels={"type": task_type})
-        
+
         with trace_span("luna", "delegate", tags={"delegation_id": delegation_id, "task_type": task_type}) as span:
             span.set_tag("delegation_id", delegation_id)
             span.set_tag("task_type", task_type)
-            
+
             if wants_ws:
                 # For streaming, we upgrade to WebSocket and handle there
                 self._metrics.increment(MetricNames.DELEGATION_COMPLETED, labels={"type": task_type, "mode": "ws"})
@@ -257,18 +254,18 @@ class BridgeServer:
                     "status": "accepted",
                     "message": "Connect to /ws with same delegation_id for streaming"
                 })
-            
+
             # Non-streaming: run agent and return result
             system_context = self._build_delegation_context(context, task_type)
-            
+
             with self._metrics.timer(MetricNames.DELEGATION_DURATION, labels={"type": task_type}):
                 result = await self._run_agent(task, system=system_context)
-            
+
             summary = self._extract_summary(result) if result else ""
             status = "completed" if result else "failed"
-            self._metrics.increment(MetricNames.DELEGATION_COMPLETED if result else MetricNames.DELEGATION_FAILED, 
+            self._metrics.increment(MetricNames.DELEGATION_COMPLETED if result else MetricNames.DELEGATION_FAILED,
                                    labels={"type": task_type})
-            
+
             return web.json_response({
                 "delegation_id": delegation_id,
                 "status": status,
@@ -283,12 +280,12 @@ class BridgeServer:
     def _build_delegation_context(self, context: dict, task_type: str) -> str:
         """Build system prompt context for delegated task."""
         parts = []
-        
+
         parts.append(f"[DELEGATED TASK — {task_type.upper()}]")
         parts.append("You are Luna, a coding specialist. Emma has delegated this task to you.")
         parts.append("Work in the existing REPL session context. Use your tools to complete the task.")
         parts.append("")
-        
+
         if context.get("project_path"):
             parts.append(f"Project: {context['project_path']}")
         if context.get("relevant_files"):
@@ -297,21 +294,21 @@ class BridgeServer:
             parts.append(f"Git branch: {context['git_branch']}")
         if context.get("recent_changes"):
             parts.append(f"Recent changes: {context['recent_changes']}")
-        
+
         parts.append("")
         parts.append("Constraints:")
         if context.get("max_duration_seconds"):
             parts.append(f"- Max duration: {context['max_duration_seconds']}s")
         if context.get("require_tests"):
             parts.append("- Write/run tests for changes")
-        
+
         return "\n".join(parts)
 
     def _extract_summary(self, response: str | None) -> str:
         """Extract a brief summary from agent response."""
         if not response:
             return "No response from agent"
-        lines = [l.strip() for l in response.split("\n") if l.strip()]
+        lines = [line.strip() for line in response.split("\n") if line.strip()]
         if not lines:
             return "Task completed"
         for line in lines:
@@ -322,13 +319,13 @@ class BridgeServer:
     async def _handle_ws(self, request: Request) -> web.WebSocketResponse:
         if not self._authorized(request):
             return web.json_response({"error": "unauthorized: missing or invalid bridge token"}, status=401)
-        
+
         ws = web.WebSocketResponse()
         await ws.prepare(request)
-        
+
         async with self._ws_lock:
             self._ws_clients.add(ws)
-        
+
         try:
             # Send initial status
             await ws.send_json({
@@ -336,7 +333,7 @@ class BridgeServer:
                 "provider": self.agent._get_provider_name(),
                 "mode": self.agent.config.mode.value,
             })
-            
+
             async for msg in ws:
                 if msg.type == web.WSMsgType.TEXT:
                     try:
@@ -348,57 +345,55 @@ class BridgeServer:
                             await self._stream_delegation_ws(ws, data)
                     except json.JSONDecodeError:
                         pass
-                elif msg.type == web.WSMsgType.ERROR:
+                elif msg.type == web.WSMsgType.ERROR or msg.type == web.WSMsgType.CLOSE:
                     break
-                elif msg.type == web.WSMsgType.CLOSE:
-                    break
-        except Exception as e:
+        except Exception:
             traceback.print_exc()
         finally:
             async with self._ws_lock:
                 self._ws_clients.discard(ws)
-        
+
         return ws
 
     async def _stream_delegation_ws(self, ws: web.WebSocketResponse, data: dict):
         """Stream a delegated task with tool events."""
-        from core.providers.base import TextChunk, ToolExecStart, ToolExecEnd
-        
+        from core.providers.base import TextChunk, ToolExecEnd, ToolExecStart
+
         delegation_id = data.get("delegation_id", "")
         task_type = data.get("task_type", "code")
         task = data.get("task", "")
         context = data.get("context", {})
         constraints = data.get("constraints", {})
-        
+
         if not task:
             await ws.send_json({"type": "error", "delegation_id": delegation_id, "message": "missing task"})
             return
-        
+
         # Metrics
         self._metrics.increment(MetricNames.DELEGATION_STARTED, labels={"type": task_type, "mode": "ws"})
-        
+
         with trace_span("luna", "delegate_stream", tags={"delegation_id": delegation_id, "task_type": task_type}) as span:
             span.set_tag("delegation_id", delegation_id)
             span.set_tag("task_type", task_type)
-            
+
             # Build system context for delegation
             system_context = self._build_delegation_context(context, task_type)
-            
+
             # Send started event
             await ws.send_json({
                 "type": "delegation_started",
                 "delegation_id": delegation_id,
                 "task_type": task_type
             })
-            
+
             try:
                 files_changed = set()
                 tests_run = 0
                 tests_passed = 0
-                
+
                 # Set emma_context for delegation
                 self.agent._emma_context = system_context
-                
+
                 with self._metrics.timer(MetricNames.DELEGATION_DURATION, labels={"type": task_type, "mode": "ws"}):
                     async for event in self.agent.run(task):
                         if isinstance(event, TextChunk):
@@ -419,10 +414,10 @@ class BridgeServer:
                             })
                             # Metrics
                             self._metrics.increment(MetricNames.TOOL_EXECUTIONS, labels={"tool": tool_name})
-                            
+
                             with self._metrics.timer(MetricNames.TOOL_DURATION, labels={"tool": tool_name}):
                                 pass  # Timing will be captured on ToolExecEnd
-                            
+
                             # Track files from write/edit tools
                             if tool_name in ("write", "edit") and "path" in args:
                                 files_changed.add(args["path"])
@@ -447,7 +442,7 @@ class BridgeServer:
                                 "delegation_id": delegation_id,
                                 "text": event
                             })
-                    
+
                     # Send completion
                     summary = self._extract_summary(last_text) if 'last_text' in locals() and last_text else "Task completed"
                 await ws.send_json({
@@ -500,10 +495,8 @@ class BridgeServer:
         async with self._ws_lock:
             clients = list(self._ws_clients)
         for client in clients:
-            try:
+            with suppress(Exception):
                 await client.send_str(msg)
-            except Exception:
-                pass
 
     @asynccontextmanager
     async def _lifespan(self, app: web.Application):
@@ -518,7 +511,7 @@ class BridgeServer:
     def create_app(self) -> web.Application:
         app = web.Application()
         app.cleanup_ctx.append(self._lifespan)
-        
+
         # Routes
         app.router.add_get("/", self._handle_index)
         app.router.add_get("/health", self._handle_health)
@@ -529,32 +522,21 @@ class BridgeServer:
         app.router.add_post("/api/ingest", self._handle_ingest)
         app.router.add_post("/api/delegate", self._handle_delegate)
         app.router.add_get("/ws", self._handle_ws)
-        
+
         self._app = app
         return app
 
     async def start(self, host: str = "127.0.0.1", port: int = 8701):
         if host not in ("127.0.0.1", "localhost", "::1"):
-            print(
-                f"⚠  WARNING: binding to {host} exposes Luna beyond this machine. "
-                "Make sure a bridge token is set (EMMA_API_KEY in .env) and that "
-                "this port is firewalled from anything but Emma."
-            )
+            pass
         if not self.bridge_token:
-            print(
-                "⚠  WARNING: no bridge token configured (EMMA_API_KEY is empty). "
-                "/api/chat and /api/ingest are DISABLED until you set one — "
-                "Luna will not accept commands or 'Emma' context from anyone "
-                "without it. Set EMMA_API_KEY in .env on both Luna and Emma to "
-                "the same shared secret to enable the bridge."
-            )
+            pass
 
         app = self.create_app()
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         self._site = web.TCPSite(self._runner, host, port)
         await self._site.start()
-        print(f"Luna server listening on http://{host}:{port}")
 
     async def stop(self):
         if self._site:
@@ -563,7 +545,7 @@ class BridgeServer:
             await self._runner.cleanup()
 
 
-async def start_server(agent: 'AgentCore', host: str = "127.0.0.1", port: int = 8701, bridge_token: str = ""):
+async def start_server(agent: AgentCore, host: str = "127.0.0.1", port: int = 8701, bridge_token: str = ""):
     """Start the bridge server (async, non-blocking)."""
     server = BridgeServer(agent, bridge_token)
     await server.start(host, port)

@@ -1,7 +1,7 @@
 from __future__ import annotations
+
 import asyncio
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
@@ -53,7 +53,7 @@ class Orchestrator:
 
     def _parse_plan(self, plan: str) -> list[Task]:
         tasks: list[Task] = []
-        current: Optional[Task] = None
+        current: Task | None = None
         for line in plan.strip().split("\n"):
             line = line.strip()
             if line.startswith("### "):
