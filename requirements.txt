@@ -6,7 +6,7 @@ rich>=13.7.1
 prompt-toolkit>=3.0.43
 tiktoken>=0.7.0
 pyperclip>=1.8.2
-structlog>=24.1.0
+structlog>=26.1.0
 
 # Optional: install with pip install -e .[provider] or -e .[feature]
 # Providers: nvidia, local, openai, anthropic

@@ -11,7 +11,7 @@ dependencies = [
     "prompt-toolkit>=3.0.43",
     "tiktoken>=0.7.0",
     "pyperclip>=1.8.2",
-    "structlog>=24.1.0",
+    "structlog>=26.1.0",
 ]
 
 [project.optional-dependencies]
