@@ -1,5 +1,5 @@
 # Core dependencies (minimal install)
-httpx>=0.27.2
+httpx>=0.28.1
 pydantic>=2.8.2
 pydantic-settings>=2.4.0
 rich>=13.7.1
