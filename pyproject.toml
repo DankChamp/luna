@@ -30,7 +30,7 @@ observability = [
     "opentelemetry-exporter-otlp>=1.20.0",
 ]
 yaml = ["pyyaml>=6.0.0"]              # YAML config (optional, TOML is default)
-anyio = ["anyio>=4.0.0"]              # Anyio support
+anyio = ["anyio>=4.16.0"]              # Anyio support
 
 # Meta groups
 full = ["nvidia", "local", "openai", "anthropic", "bridge", "sessions", "observability", "yaml", "anyio"]
